@@ -1,14 +1,30 @@
+from ipaddress import ip_interface
 from secrets import choice
 from shutil import which
 from string import ascii_uppercase, digits
-from subprocess import Popen, PIPE, TimeoutExpired
+from subprocess import run, Popen, PIPE, TimeoutExpired
 
 __all__ = [
     'run_ssh_cmd',
     'complete_ssh_cmd',
     'scp_file',
-    'random_hostname_and_domain'
+    'determine_vip',
 ]
+
+
+def determine_vip(ipinfo):
+    # TODO: assumes version 4 only
+    for i in ip_interface(ipinfo).network:
+        last_octet = int(i.compressed.split('.')[-1])
+        if last_octet < 15 or last_octet >= 250:
+            # addresses like *.255, *.0 and any of them that
+            # are < *.15 we'll ignore. Those are typically
+            # reserved for routing/switch devices anyways
+            continue
+        elif run(['ping', '-c', '2', '-w', '4', i.compressed]).returncode != 0:
+            # sent 2 packets to the address and got no response so assume
+            # it's safe to use
+            return i.compressed
 
 
 def random_hostname(is_ha, domain=True):

@@ -1,10 +1,10 @@
-import ipaddress
-import subprocess
 import time
 
 import pytest
 
 from middlewared.test.integration.utils.client import client
+
+from functions import determine_vip
 
 
 @pytest.fixture(scope='module')
@@ -43,20 +43,12 @@ def get_payload(api_config, ws_client, ip_to_use):
     if api_config['is_ha']:
         vip = api_config['vip']
         if not vip:
-            # giving a VIP is optional so if one wasn't provided let's
-            # try to find one that we can use
-            for i in ipaddress.ip_interface(f'{ip_to_use}/{netmask}').network:
-                if i.compressed.endswith(('.0', '.255')):
-                    continue
-                elif subprocess.run(['ping', '-c', '2', '-w', '4', i.compressed]).returncode != 0:
-                    # sent 2 packets to the address and got no response so assume
-                    # it's safe to use
-                    vip = i.compressed
-                    api_config['vip'] = vip
-                    to_validate.append(vip)
-                    break
-            else:
+            vip = determine_vip(f'{ip_to_use}/{netmask}')
+            if vip is None:
                 assert False, 'Unable to find an IP address to be assigned as the VIP'
+            else:
+                api_config['vip'] = vip
+                to_validate.append(vip)
 
         payload.update({
             'failover_critical': True,
