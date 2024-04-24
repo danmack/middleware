@@ -305,6 +305,27 @@ pytest_command = [
 if testexpr:
     pytest_command.extend(['-k', testexpr])
 
+tests = ['api2/test_001_ssh.py',
+         'api2/test_002_system_license.py',
+         'api2/test_003_network_global.py',
+         'api2/test_005_interface.py',
+         'api2/test_006_pool_and_sysds.py',
+         'api2/test_009_fenced.py',
+         'api2/test_014_failover_related.py',
+         'api2/test_260_iscsi.py',
+         'api2/test_261_iscsi_cmd.py',
+         'api2/test_audit_iscsi.py',
+         'api2/test_iscsi_auth_crud_roles.py',
+         'api2/test_iscsi_auth_network.py',
+         'api2/test_iscsi_extent_crud_roles.py',
+         'api2/test_iscsi_global_crud_roles.py',
+         'api2/test_iscsi_host_crud_roles.py',
+         'api2/test_iscsi_initiator_crud_roles.py',
+         'api2/test_iscsi_portal_crud_roles.py',
+         'api2/test_iscsi.py',
+         'api2/test_iscsi_target_crud_roles.py',
+         'api2/test_iscsi_targetextent_crud_roles.py']
+
 if tests:
     pytest_command.extend(tests)
 else:
