@@ -3,6 +3,8 @@ import subprocess
 
 from middlewared.service import job, private, Service
 
+DHPARAM_PEM_MODE = 0o600
+
 
 class CertificateService(Service):
 
@@ -23,3 +25,4 @@ class CertificateService(Service):
                     subprocess.run(
                         ['openssl', 'dhparam', '-rand', '/dev/urandom', '2048'], stdout=f, stderr=console, check=True
                     )
+                    os.fchmod(f.fileno(), DHPARAM_PEM_MODE)
