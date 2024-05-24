@@ -181,6 +181,11 @@ def klist_impl(ccache_path: str) -> list:
     return parse_klist_output(kl.stdout.decode())
 
 
+def klist_check(ccache_path: str) -> bool:
+    kl = subprocess.run(['klist', '-sc', ccache_path], check=False)
+    return kl.returncode == 0
+
+
 def parse_keytab(keytab_output: list) -> list:
     """
     Internal parser for output of `klist -ket` for a kerberos keytab

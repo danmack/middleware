@@ -6,13 +6,15 @@ import wbclient
 
 from middlewared.schema import accepts, Bool, Dict, Int, Password, Patch, Ref, Str, LDAP_DN, OROperator
 from middlewared.service import CallError, CRUDService, job, private, ValidationErrors, filterable
-from middlewared.service_exception import MatchNotFound
-from middlewared.plugins.directoryservices import SSL
-from middlewared.plugins.idmap_.utils import (
-    IDType, SID_LOCAL_USER_PREFIX, SID_LOCAL_GROUP_PREFIX, TRUENAS_IDMAP_MAX, WBClient, WBCErr
+from middlewared.utils.directoryservices.constants import SSL
+from middlewared.plugins.idmap_.idmap_constants import (
+    IDType, SID_LOCAL_USER_PREFIX, SID_LOCAL_GROUP_PREFIX, TRUENAS_IDMAP_MAX
 )
+from middlewared.plugins.directoryservices_.all import get_enabled_ds
+from middlewared.plugins.idmap_.idmap_winbind import (WBClient, WBCErr)
+from middlewared.plugins.idmap_.idmap_sss import SSSClient
 import middlewared.sqlalchemy as sa
-from middlewared.utils import run, filter_list
+from middlewared.utils import filter_list
 from middlewared.validators import Range
 from middlewared.plugins.smb import SMBPath
 try:
@@ -234,7 +236,6 @@ class IdmapDomainService(CRUDService):
         datastore_extend = 'idmap.idmap_extend'
         cli_namespace = 'directory_service.idmap'
         role_prefix = 'DIRECTORY_SERVICE'
-
 
     def __wbclient_ctx(self, retry=True):
         """
@@ -910,35 +911,6 @@ class IdmapDomainService(CRUDService):
         await self.middleware.call('etc.generate', 'smb')
         return ret
 
-    def _pyuidgid_to_dict(self, entry):
-        if entry.id_type == IDType.USER.wbc_const():
-            idtype = 'USER'
-        elif entry.id_type == IDType.GROUP.wbc_const():
-            idtype = 'GROUP'
-        else:
-            idtype = 'BOTH'
-        return {
-            'id_type': idtype,
-            'id': entry.id,
-            'sid': entry.sid
-        }
-
-    @private
-    async def name_to_sid(self, name):
-        try:
-            client = self.__wbclient_ctx()
-            entry = client.name_to_uidgid_entry(name)
-        except wbclient.WBCError as e:
-            raise CallError(str(e), WBCErr[e.error_code], e.error_code)
-
-        except MatchNotFound:
-            return {'sid': None, 'type': wbclient.SID_TYPE_NAME_INVALID}
-
-        return {
-            'sid': entry.sid,
-            'type': entry.sid_type['raw']
-        }
-
     @private
     def convert_sids(self, sidlist):
         """
@@ -961,21 +933,28 @@ class IdmapDomainService(CRUDService):
 
         for sid in sidlist:
             try:
-                entry = self.__unixsid_to_name(sid, client.ctx.separator.decode())
+                entry = self.__unixsid_to_name(sid, client.separator)
             except KeyError:
                 # This is a Unix Sid, but account doesn't exist
                 unmapped.update({sid: sid})
                 continue
 
             if entry:
-                mapped.update({sid: {
-                    'id_type': IDType.parse_wbc_id_type(entry['id_type']),
-                    'id': entry['id'],
-                    'name': entry['name']
-                }})
+                mapped[sid] = entry
                 continue
 
             to_check.append(sid)
+
+        # First try to retrieve SIDs via SSSD since SSSD and
+        # winbind are both running when we are joined to an IPA
+        # domain. Former provides authoritative SID<->XID resolution
+        # IPA accounts. The latter is authoritative for local accounts.
+        if get_enabled_ds() and get_enabled_ds.name == 'IPA':
+            if to_check:
+                sss_ctx = SSSClient()
+                results = sss_ctx.sids_to_idmap_entries(to_check)
+                mapped |= results['mapped']
+                to_check = list(results['unmapped'].keys())
 
         if to_check:
             try:
@@ -983,12 +962,7 @@ class IdmapDomainService(CRUDService):
             except wbclient.WBCError as e:
                 raise CallError(str(e), WBCErr[e.error_code], e.error_code)
 
-            mapped |= {sid: {
-                'id_type': IDType.parse_wbc_id_type(entry.id_type),
-                'id': entry.id,
-                'name': f'{entry.domain}{client.ctx.separator.decode()}{entry.name}',
-            } for sid, entry in results['mapped'].items()}
-
+            mapped |= results['mapped']
             unmapped |= results['unmapped']
 
         return {'mapped': mapped, 'unmapped': unmapped}
@@ -1001,37 +975,43 @@ class IdmapDomainService(CRUDService):
         from libwbclient (single winbindd request), and so it is the preferred
         method of batch conversion.
         """
-        payload = []
         output = {'mapped': {}, 'unmapped': {}}
 
         if not id_list:
             return output
 
-        for entry in id_list:
-            unixid = entry.get("id")
-            id_ = IDType[entry.get("id_type", "GROUP")]
-            payload.append({
-                'id_type': id_.wbc_str(),
-                'id': unixid
-            })
+        ds_obj = get_enabled_ds()
+        if ds_obj and ds_obj.name == 'ipa':
+            config = ds_obj.get_smb_domain_info()
+            idmap_range = range(config['range_id_min'], config['range_id_max'])
+            sss_ctx = SSSClient()
+            results = sss_ctx.users_and_groups_to_idmap_entries(id_list)
+            if not results['unmapped']:
+                # short-circuit
+                return results
 
-        try:
-            client = self.__wbclient_ctx()
-            results = client.users_and_groups_to_sids(payload)
-        except wbclient.WBCError as e:
-            raise CallError(str(e), WBCErr[e.error_code], e.error_code)
+            output['mapped'] = results['mapped']
+            id_list = list(results['unmapped'].keys())
+            id_list = []
+            for entry in results['unmapped'].keys():
+                id_type, xid = entry.split(':')
+                if int(xid) in idmap_range:
+                    continue
 
-        output['mapped'] = {unixid: {
-            'id_type': entry.sid_type['parsed'][4:],
-            'id': entry.id,
-            'sid': entry.sid,
-            'name': f'{entry.domain}{client.ctx.separator.decode()}{entry.name}',
-        } for unixid, entry in results['mapped'].items()}
+                id_list.append({
+                    'id_type': 'USER' if id_type == 'UID' else 'GROUP',
+                    'id': int(xid)
+                })
 
-        output['unmapped'] = {unixid: {
-            'id_type': 'GROUP' if unixid.startswith('GID') else 'USER',
-            'id': entry.id,
-        } for unixid, entry in results['unmapped'].items()}
+        if id_list:
+            try:
+                client = self.__wbclient_ctx()
+                results = client.users_and_groups_to_idmap_entries(id_list)
+            except wbclient.WBCError as e:
+                raise CallError(str(e), WBCErr[e.error_code], e.error_code)
+
+            output['mapped'] |= results['mapped']
+            output['unmapped'] = results['unmapped']
 
         return output
 
@@ -1045,7 +1025,8 @@ class IdmapDomainService(CRUDService):
             return {
                 'name': f'Unix User{separator}{u["pw_name"]}',
                 'id': uid,
-                'id_type': IDType.USER.wbc_const()
+                'id_type': IDType.USER.name,
+                'sid': sid
             }
 
         gid = int(sid[len(SID_LOCAL_GROUP_PREFIX):])
@@ -1053,27 +1034,8 @@ class IdmapDomainService(CRUDService):
         return {
             'name': f'Unix Group{separator}{g["gr_name"]}',
             'id': gid,
-            'id_type': IDType.GROUP.wbc_const()
-        }
-
-    @private
-    def sid_to_name(self, sid):
-        try:
-            client = self.__wbclient_ctx()
-        except wbclient.WBCError as e:
-            raise CallError(str(e), WBCErr[e.error_code], e.error_code)
-
-        if (entry := self.__unixsid_to_name, sid, client.ctx.separator.decode()):
-            return entry
-
-        try:
-            entry = client.sid_to_uidgid_entry(sid)
-        except wbclient.WBCError as e:
-            raise CallError(str(e), WBCErr[e.error_code], e.error_code)
-
-        return {
-            'name': f'{entry.domain}{client.ctx.separator.decode()}{entry.name}',
-            'type': entry.sid_type['raw']
+            'id_type': IDType.GROUP.name,
+            'sid': sid
         }
 
     @private

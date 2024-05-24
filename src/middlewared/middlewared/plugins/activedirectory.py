@@ -1,12 +1,10 @@
-import datetime
-import enum
 import errno
 import json
 import ipaddress
 import os
 import contextlib
 
-from middlewared.plugins.smb import SMBCmd, SMBPath
+from middlewared.plugins.smb import SMBCmd
 from middlewared.plugins.kerberos import krb5ccache
 from middlewared.schema import (
     accepts, Bool, Dict, Int, IPAddr, LDAP_DN, List, NetbiosName, Ref, returns, Str
@@ -15,28 +13,14 @@ from middlewared.service import job, private, ConfigService, ValidationError, Va
 from middlewared.service_exception import CallError, MatchNotFound
 import middlewared.sqlalchemy as sa
 from middlewared.utils import run
-from middlewared.plugins.directoryservices import DSStatus
+from middlewared.utils.directoryservices.ad_constants import (
+    DEFAULT_SITE_NAME,
+    MAX_SERVER_TIME_OFFSET
+)
+from middlewared.utils.directoryservices.constants import DSStatus
+from middlewared.plugins.directoryservices_.all import get_enabled_ds, registered_services_obj
 from middlewared.plugins.idmap import DSType
 from middlewared.validators import Range
-
-
-class neterr(enum.Enum):
-    JOINED = 1
-    NOTJOINED = 2
-    FAULT = 3
-
-    def to_status(errstr):
-        errors_to_rejoin = [
-            '0xfffffff6',
-            'LDAP_INVALID_CREDENTIALS',
-            'The name provided is not a properly formed account name',
-            'The attempted logon is invalid.'
-        ]
-        for err in errors_to_rejoin:
-            if err in errstr:
-                return neterr.NOTJOINED
-
-        return neterr.FAULT
 
 
 class ActiveDirectoryModel(sa.Model):
@@ -165,7 +149,10 @@ class ActiveDirectoryService(ConfigService):
     @private
     async def common_validate(self, new, old, verrors):
         try:
-            if not (await self.middleware.call('activedirectory.netbiosname_is_ours', new['netbiosname'], new['domainname'], new['dns_timeout'])):
+            if not (await self.middleware.call(
+                'activedirectory.netbiosname_is_ours',
+                new['netbiosname'], new['domainname'], new['dns_timeout']
+            )):
                 verrors.add(
                     'activedirectory_update.netbiosname',
                     f'NetBIOS name [{new["netbiosname"]}] appears to be in use by another computer in Active Directory DNS. '
@@ -432,11 +419,14 @@ class ActiveDirectoryService(ConfigService):
                join.
             """
             try:
-                domain_info = await self.domain_info(new['domainname'])
+                domain_info = await self.middleware.run_in_thread(
+                    registered_ds_obj.activedirectory._domain_info,
+                    new['domainname']
+                )
             except CallError as e:
                 raise ValidationError('activedirectory.domainname', e.errmsg)
 
-            if abs(domain_info['Server time offset']) > 180:
+            if abs(domain_info['server_time_offset']) > MAX_SERVER_TIME_OFFSET:
                 raise ValidationError(
                     'activedirectory.domainname',
                     'Time offset from Active Directory domain exceeds maximum '
@@ -520,6 +510,9 @@ class ActiveDirectoryService(ConfigService):
 
         config = await self.ad_compress(new)
         await self.middleware.call('datastore.update', self._config.datastore, new['id'], config, {'prefix': 'ad_'})
+        await self.middleware.run_in_thread(
+            registered_services_obj.activedirectory.update_config
+        )
         await self.middleware.call('etc.generate', 'smb')
 
         if not old['enable'] and new['enable']:
@@ -546,11 +539,16 @@ class ActiveDirectoryService(ConfigService):
             try:
                 await self.__start(job)
             except Exception:
-                self.logger.error('Failed to start active directory service. Disabling.')
-                await self.set_state(DSStatus['DISABLED'].name)
+                self.logger.error(
+                    'Failed to start active directory service. Disabling.',
+                    exc_info=True
+                )
                 await self.middleware.call(
                     'datastore.update', self._config.datastore, new['id'],
                     {'enable': False}, {'prefix': 'ad_'}
+                )
+                await self.middleware.run_in_thread(
+                    registered_services_obj.activedirectory.update_config
                 )
 
         elif not new['enable'] and old['enable']:
@@ -562,45 +560,20 @@ class ActiveDirectoryService(ConfigService):
         return await self.config()
 
     @private
-    async def set_state(self, state):
-        return await self.middleware.call('directoryservices.set_state', {'activedirectory': state})
-
-    @accepts(roles=['DIRECTORY_SERVICE_READ'])
-    @returns(Str('directoryservice_state', enum=[x.name for x in DSStatus], register=True))
-    async def get_state(self):
-        """
-        Wrapper function for 'directoryservices.get_state'. Returns only the state of the
-        Active Directory service.
-        """
-        return (await self.middleware.call('directoryservices.get_state'))['activedirectory']
-
-    @private
-    async def set_idmap(self, trusted_domains, our_domain):
-        idmap = await self.middleware.call('idmap.query',
-                                           [('id', '=', DSType.DS_TYPE_ACTIVEDIRECTORY.value)],
-                                           {'get': True})
-        idmap_id = idmap.pop('id')
-        if not idmap['range_low']:
-            idmap['range_low'], idmap['range_high'] = await self.middleware.call('idmap.get_next_idmap_range')
-        idmap['dns_domain_name'] = our_domain.upper()
-        await self.middleware.call('idmap.update', idmap_id, idmap)
-
-    @private
-    async def add_privileges(self, domain_name, workgroup):
+    def add_privileges(self, domain_name, domain_sid):
         """
         Grant Domain Admins full control of server
         """
-        existing_privileges = await self.middleware.call(
+        existing_privileges = self.middleware.call_sync(
             'privilege.query',
             [["name", "=", domain_name]]
         )
         if existing_privileges:
             return
 
-        domain_info = await self.middleware.call('idmap.domain_info', workgroup)
-        await self.middleware.call('privilege.create', {
+        self.middleware.call_sync('privilege.create', {
             'name': domain_name,
-            'ds_groups': [f'{domain_info["sid"]}-512'],
+            'ds_groups': [f'{domain_sid}-512'],
             'allowlist': [{'method': '*', 'resource': '*'}],
             'web_shell': True
         })
@@ -640,33 +613,36 @@ class ActiveDirectoryService(ConfigService):
         job.set_progress(70, 'Storing computer account keytab.')
         await self.middleware.call('kerberos.keytab.store_ad_keytab')
 
-    async def __start(self, job):
+    def __start(self, job):
         """
         Start AD service. In 'UNIFIED' HA configuration, only start AD service
         on active storage controller.
         """
-        ad = await self.config()
-        smb = await self.middleware.call('smb.config')
+        ds_obj = get_enabled_ds()
+        if ds_obj.ds_type is not DSType.AD:
+            # It is not clear how this could happen, but we should fail
+            # if the enabled directory service changes between when we update our
+            # config to enable AD and then begin starting the service.
+            raise CallError('Enabled directory service type is not active directory')
+
+        ad = ds_obj.config
+        smb = self.middleware.call_sync('smb.config')
         workgroup = smb['workgroup']
-        smb_ha_mode = await self.middleware.call('smb.reset_smb_ha_mode')
-        if smb_ha_mode == 'UNIFIED':
-            if await self.middleware.call('failover.status') != 'MASTER':
-                return
+        if ds_obj._is_enterprise:
+            # We shouldn't be getting here if we're the passive controller
+            # but we should bail if our state has flapped since update
+            ds_obj._assert_is_active()
 
-        state = await self.get_state()
-        if state in [DSStatus['JOINING'], DSStatus['LEAVING']]:
-            raise CallError(f'Active Directory Service has status of [{state}]. Wait until operation completes.', errno.EBUSY)
+        dc_info = self.middleware.call_sync('activedriectory.lookup_dc', ad['domainname'])
 
-        dc_info = await self.lookup_dc(ad['domainname'])
-
-        await self.set_state(DSStatus['JOINING'].name)
+        ds_obj.status = DSStatus.JOINING
         job.set_progress(0, 'Preparing to join Active Directory')
+
         if ad['verbose_logging']:
             self.logger.debug('Starting Active Directory service for [%s]', ad['domainname'])
 
-        await self.middleware.call('datastore.update', self._config.datastore, ad['id'], {'enable': True}, {'prefix': 'ad_'})
-        await self.middleware.call('etc.generate', 'smb')
-        await self.middleware.call('etc.generate', 'hostname')
+        self.middleware.call_sync('etc.generate', 'smb')
+        self.middleware.call_sync('etc.generate', 'hostname')
 
         """
         Kerberos realm field must be populated so that we can perform a kinit
@@ -675,29 +651,30 @@ class ActiveDirectoryService(ConfigService):
         job.set_progress(5, 'Configuring Kerberos Settings.')
         if not ad['kerberos_realm']:
             try:
-                realm_id = (await self.middleware.call(
+                realm_id = self.middleware.call_sync(
                     'kerberos.realm.query',
                     [('realm', '=', ad['domainname'])],
                     {'get': True}
-                ))['id']
+                )['id']
             except MatchNotFound:
-                realm_id = await self.middleware.call(
+                realm_id = self.middleware.call_sync(
                     'datastore.insert', 'directoryservice.kerberosrealm',
                     {'krb_realm': ad['domainname'].upper()}
                 )
 
-            await self.middleware.call(
+            self.middleware.call_sync(
                 'datastore.update', self._config.datastore, ad['id'],
                 {"kerberos_realm": realm_id}, {'prefix': 'ad_'}
             )
-            ad = await self.config()
+            ds_obj.update_config()
+            ad = ds_obj.config
 
-        if not await self.middleware.call(
+        if not self.middleware.call_sync(
             'kerberos.check_ticket',
             {'ccache': krb5ccache.SYSTEM.name},
             False
         ):
-            await self.middleware.call('kerberos.start')
+            self.middleware.call_sync('kerberos.start')
 
         """
         'workgroup' is the 'pre-Windows 2000 domain name'. It must be set to the nETBIOSName value in Active Directory.
@@ -709,52 +686,26 @@ class ActiveDirectoryService(ConfigService):
         job.set_progress(20, 'Detecting Active Directory Site.')
         if not ad['site']:
             ad['site'] = dc_info['Client Site Name']
-            if dc_info['Client Site Name'] != 'Default-First-Site-Name':
-                await self.middleware.call('activedirectory.set_kerberos_servers', ad)
 
         job.set_progress(30, 'Detecting Active Directory NetBIOS Domain Name.')
         if workgroup != dc_info['Pre-Win2k Domain']:
             self.logger.debug('Updating SMB workgroup to %s', dc_info['Pre-Win2k Domain'])
-            await self.middleware.call('datastore.update', 'services.cifs', smb['id'], {
+            self.middleware.call_sync('datastore.update', 'services.cifs', smb['id'], {
                 'cifs_srv_workgroup': dc_info['Pre-Win2k Domain']
             })
             workgroup = dc_info['Pre-Win2k Domain']
 
         # Ensure smb4.conf has correct workgorup.
-        await self.middleware.call('etc.generate', 'smb')
-
-        """
-        Check response of 'net ads testjoin' to determine whether the server needs to be joined to Active Directory.
-        Only perform the domain join if we receive the exact error code indicating that the server is not joined to
-        Active Directory. 'testjoin' will fail if the NAS boots before the domain controllers in the environment.
-        In this case, samba should be started, but the directory service reported in a FAULTED state.
-        """
+        self.middleware.call_sync('etc.generate', 'smb')
 
         job.set_progress(40, 'Performing testjoin to Active Directory Domain')
-        machine_acct = f'{ad["netbiosname"].upper()}$@{ad["domainname"]}'
-        ret = await self._net_ads_testjoin(workgroup, ad)
-        if ret == neterr.NOTJOINED:
+        machine_acct = f'{smb["netbiosname_local"].upper()}$@{ad["domainname"]}'
+        is_joined = ds_obj.test_join(workgroup)
+        if not is_joined:
             job.set_progress(50, 'Joining Active Directory Domain')
             self.logger.debug(f"Test join to {ad['domainname']} failed. Performing domain join.")
-            await self._net_ads_join(workgroup, ad)
 
-            try:
-                await self.post_join_setup(job, {
-                    'ad_config': ad,
-                    'smb_config': smb,
-                    'ha_mode': smb_ha_mode
-                })
-            except Exception:
-                self.logger.error("Tasks subsequent to Active Directory join failed. "
-                                  "Attempting to roll-back join attempt.", exc_info=True)
-                await self._net_ads_leave({'username': ad['bindname']})
-                raise
-
-            await self.middleware.call('datastore.update', self._config.datastore, ad['id'], {
-                'kerberos_principal': machine_acct
-            }, {'prefix': 'ad_'})
-
-            ad = await self.config()
+            ds_obj.join(workgroup)
 
             job.set_progress(75, 'Performing kinit using new computer account.')
 
@@ -765,91 +716,77 @@ class ActiveDirectoryService(ConfigService):
             talking to) and so during this operation we need to hard-code which KDC we use for
             the new kinit.
             """
-            domain_info = await self.domain_info(ad['domainname'])
-            cred = await self.middleware.call('kerberos.get_cred', {
+            domain_info = ds_obj._domain_info()
+
+            cred = self.middleware.call_sync('kerberos.get_cred', {
                 'dstype': DSType.DS_TYPE_ACTIVEDIRECTORY.name,
                 'conf': {
                     'domainname': ad['domainname'],
                     'kerberos_principal': machine_acct,
                 }
             })
-            await self.middleware.run_in_thread(os.unlink, '/etc/krb5.conf')
-            await self.middleware.call('kerberos.do_kinit', {
+            os.unlink('/etc/krb5.conf')
+            self.middleware.call_sync('kerberos.do_kinit', {
                 'krb5_cred': cred,
                 'kinit-options': {
-                    'kdc_override': {'domain': ad['domainname'], 'kdc': domain_info['KDC server']}
+                    'kdc_override': {'domain': ad['domainname'], 'kdc': domain_info['kdc_server']}
                 }
             })
-            await self.middleware.call('kerberos.wait_for_renewal')
-            await self.middleware.call('etc.generate', 'kerberos')
+            self.middleware.call_sync('kerberos.wait_for_renewal')
+            self.middleware.call_sync('etc.generate', 'kerberos')
 
             job.set_progress(80, 'Configuring idmap backend and NTP servers.')
-            await self.middleware.call('service.update', 'cifs', {'enable': True})
-            await self.set_idmap(ad['allow_trusted_doms'], ad['domainname'])
-            await self.middleware.call('activedirectory.set_ntp_servers')
-            await self.middleware.call("directoryservices.secrets.backup")
-            ret = neterr.JOINED
-        elif ret == neterr.JOINED:
+            self.middleware.call_sync('service.update', 'cifs', {'enable': True})
+            self.middleware.call_sync('activedirectory.set_ntp_servers')
+        else:
             # We are already joined to AD. User may have disabled then re-renabled the plugin
             # Check whether we have valid kerberos principal
-            if not ad['kerberos_principal']:
-                if not await self.middleware.call('kerberos.keytab.query', [['AD_MACHINE_ACCOUNT']]):
-                    # Force writing of keytab based on stored secrets to our config file.
-                    await self.middleware.call('activedirectory.check_machine_account_keytab', ad['domainname'])
+            domain_info = ds_obj._domain_info()
 
-                await self.middleware.call('datastore.update', self._config.datastore, ad['id'], {
+            if not ad['kerberos_principal']:
+                if not self.middleware.call_sync('kerberos.keytab.query', [['AD_MACHINE_ACCOUNT']]):
+                    # Force writing of keytab based on stored secrets to our config file.
+                    self.middleware.call_sync('activedirectory.check_machine_account_keytab', ad['domainname'])
+
+                self.middleware.call_sync('datastore.update', self._config.datastore, ad['id'], {
                     'kerberos_principal': machine_acct
                 }, {'prefix': 'ad_'})
 
-        await self.middleware.call('etc.generate', 'smb')
-        await self.middleware.call('service.restart', 'idmap')
-        await self.middleware.call('etc.generate', 'pam')
-        if ret == neterr.JOINED:
-            await self.set_state(DSStatus['HEALTHY'].name)
-            job.set_progress(90, 'Restarting dependent services.')
-            await self.middleware.call('service.start', 'dscache')
-            await self.middleware.call('directoryservices.restart_dependent_services')
-            if ad['verbose_logging']:
-                self.logger.debug('Successfully started AD service for [%s].', ad['domainname'])
+        self.middleware.call_sync('etc.generate', 'smb')
+        self.middleware.call_sync('service.restart', 'idmap')
+        self.middleware.call_sync('etc.generate', 'pam')
+        self.middleware.call_sync('etc.generate', 'nss')
 
-        else:
-            await self.set_state(DSStatus['FAULTED'].name)
-            self.logger.warning('Server is joined to domain [%s], but is in a faulted state.', ad['domainname'])
+        ds_obj.status = DSStatus.HEALTHY.name
+        job.set_progress(90, 'Restarting dependent services.')
+        self.middleware.call_sync('service.start', 'dscache')
+        self.middleware.call_sync('directoryservices.restart_dependent_services')
+        if ad['verbose_logging']:
+            self.logger.debug('Successfully started AD service for [%s].', ad['domainname'])
 
-        job.set_progress(100, f'Active Directory start completed with status [{ret.name}]')
-        await self.middleware.call('service.reload', 'idmap')
+        job.set_progress(95, 'Active Directory start completed.')
+        self.middleware.call_sync('service.reload', 'idmap')
 
-        if ret == neterr.JOINED:
-            job.set_progress(100, 'Granting privileges to domain admins.')
-            try:
-                await self.add_privileges(ad['domainname'], dc_info['Pre-Win2k Domain'])
-            except Exception:
-                self.logger.warning('Failed to grant Domain Admins privileges', exc_info=True)
-
-        return ret.name
+        job.set_progress(100, 'Granting privileges to domain admins.')
+        try:
+            self.add_privileges(ad['domainname'], domain_info['sid'])
+        except Exception:
+            self.logger.warning('Failed to grant Domain Admins privileges', exc_info=True)
 
     async def __stop(self, job, config):
         job.set_progress(0, 'Preparing to stop Active Directory service')
-        await self.middleware.call(
-            'datastore.update', self._config.datastore,
-            config['id'], {'ad_enable': False}
-        )
-
-        await self.set_state(DSStatus['LEAVING'].name)
         job.set_progress(5, 'Stopping Active Directory monitor')
         await self.middleware.call('etc.generate', 'hostname')
         job.set_progress(10, 'Stopping kerberos service')
         await self.middleware.call('kerberos.stop')
-        job.set_progress(20, 'Reconfiguring SMB.')
-        await self.middleware.call('service.stop', 'cifs')
         await self.middleware.call('service.restart', 'idmap')
         job.set_progress(40, 'Reconfiguring pam and nss.')
         await self.middleware.call('etc.generate', 'pam')
-        await self.set_state(DSStatus['DISABLED'].name)
+        await self.middleware.call('etc.generate', 'nss')
         job.set_progress(60, 'clearing caches.')
         await self.middleware.call('service.stop', 'dscache')
-        await self.middleware.call('service.start', 'cifs')
-        await self.set_state(DSStatus['DISABLED'].name)
+        job.set_progress(80, 'Restarting dependent services.')
+        await self.middleware.call('directoryservices.restart_dependent_services')
         job.set_progress(100, 'Active Directory stop completed.')
 
     @private
@@ -882,152 +819,6 @@ class ActiveDirectoryService(ConfigService):
             'kinit-options': {'kdc_override': {'domain': ad['domainname'], 'kdc': kdc}},
         })
         return
-
-    @private
-    async def _parse_join_err(self, msg):
-        if len(msg) < 2:
-            raise CallError(msg)
-
-        if "Invalid configuration" in msg[1]:
-            """
-            ./source3/libnet/libnet_join.c will return configuration erros for the
-            following situations:
-            - incorrect workgroup
-            - incorrect realm
-            - incorrect security settings
-            Unless users set auxiliary parameters, only the first should be a possibility.
-            """
-            raise CallError(f'{msg[1].rsplit(")",1)[0]}).', errno.EINVAL)
-        else:
-            raise CallError(msg[1])
-
-    @private
-    async def _net_ads_join(self, workgroup, ad):
-        await self.middleware.call("kerberos.check_ticket")
-        cmd = [
-            SMBCmd.NET.value,
-            '--use-kerberos', 'required',
-            '--use-krb5-ccache', krb5ccache.SYSTEM.value,
-            '-w', workgroup,
-            '-U', ad['bindname'],
-            '-d', '5',
-            'ads', 'join'
-        ]
-
-        if ad['createcomputer']:
-            cmd.append(f'createcomputer={ad["createcomputer"]}')
-
-        cmd.extend(['--no-dns-updates', ad['domainname']])
-        netads = await run(cmd, check=False)
-        if netads.returncode != 0:
-            self.logger.warning("AD JOIN FAILED: %s", netads.stderr.decode())
-            await self.set_state(DSStatus['FAULTED'].name)
-            await self._parse_join_err(netads.stdout.decode().split(':', 1))
-
-    @private
-    async def _net_ads_testjoin(self, workgroup, ad=None):
-        """
-        If neterr.NOTJOINED is returned then we will proceed with joining (or re-joining)
-        the AD domain. There are currently two reasons to do this:
-        1) we're not joined to AD
-        2) our computer account was deleted out from under us
-        It's generally better to report an error condition to the end user and let them
-        fix it, but situation (2) above is straightforward enough to automatically re-join.
-        In this case, the error message presents oddly because stale credentials are stored in
-        the secrets.tdb file and the message is passed up from underlying KRB5 library.
-        """
-        await self.middleware.call("kerberos.check_ticket")
-        if ad is None:
-            ad = await self.config()
-
-        cmd = [
-            SMBCmd.NET.value,
-            '--use-kerberos', 'required',
-            '--use-krb5-ccache', krb5ccache.SYSTEM.value,
-            '-w', workgroup,
-            '-d', '5',
-            'ads', 'testjoin'
-        ]
-
-        netads = await run(cmd, check=False)
-        if netads.returncode != 0:
-            errout = netads.stderr.decode()
-            with open(f"{SMBPath.LOGDIR.platform()}/domain_testjoin_{int(datetime.datetime.now().timestamp())}.log", "w") as f:
-                f.write(errout)
-
-            return neterr.to_status(errout)
-
-        return neterr.JOINED
-
-    @private
-    async def _net_ads_leave(self, data):
-        await self.middleware.call('kerberos.check_ticket')
-
-        cmd = [
-            SMBCmd.NET.value,
-            '--use-kerberos', 'required',
-            '--use-krb5-ccache', krb5ccache.SYSTEM.value,
-            '-U', data['username'],
-            'ads', 'leave',
-        ]
-
-        netads = await run(cmd, check=False)
-        if netads.returncode != 0:
-            self.logger.warning("Failed to leave domain: %s", netads.stderr.decode())
-            return False
-
-        return True
-
-    @accepts(Str('domain', default=''), roles=['DIRECTORY_SERVICE_READ'])
-    @returns(Dict(
-        IPAddr('LDAP server'),
-        Str('LDAP server name'),
-        Str('Realm'),
-        LDAP_DN('Bind Path'),
-        Int('LDAP port'),
-        Int('Server time'),
-        IPAddr('KDC server'),
-        Int('Server time offset'),
-        Int('Last machine account password change')
-    ))
-    async def domain_info(self, domain):
-        """
-        Returns the following information about the currently joined domain:
-
-        `LDAP server` IP address of current LDAP server to which TrueNAS is connected.
-
-        `LDAP server name` DNS name of LDAP server to which TrueNAS is connected
-
-        `Realm` Kerberos realm
-
-        `LDAP port`
-
-        `Server time` timestamp.
-
-        `KDC server` Kerberos KDC to which TrueNAS is connected
-
-        `Server time offset` current time offset from DC.
-
-        `Last machine account password change`. timestamp
-        """
-        if domain:
-            cmd = [SMBCmd.NET.value, '-S', domain, '--json', '--option', f'realm={domain}', 'ads', 'info']
-        else:
-            cmd = [SMBCmd.NET.value, '--json', 'ads', 'info']
-
-        netads = await self.cache_flush_retry(cmd)
-        if netads.returncode != 0:
-            err_msg = netads.stderr.decode().strip()
-            if err_msg == "Didn't find the ldap server!":
-                raise CallError(
-                    'Failed to discover Active Directory Domain Controller '
-                    'for domain. This may indicate a DNS misconfiguration.',
-                    errno.ENOENT
-                )
-
-            raise CallError(netads.stderr.decode())
-
-        return json.loads(netads.stdout.decode())
 
     @private
     async def set_ntp_servers(self):
@@ -1122,7 +913,9 @@ class ActiveDirectoryService(ConfigService):
         await self.middleware.call('kerberos.do_kinit', {'krb5_cred': cred})
 
         job.set_progress(10, 'Leaving Active Directory domain.')
-        left_successfully = await self._net_ads_leave(data)
+        left_successfully = await self.middleware.run_in_thread(
+            registered_services_obj.activedirectory.leave, data['username']
+        )
 
         job.set_progress(15, 'Removing DNS entries')
         await self.middleware.call('activedirectory.unregister_dns', ad)
@@ -1164,8 +957,9 @@ class ActiveDirectoryService(ConfigService):
             'datastore.update', self._config.datastore,
             ad['id'], payload, {'prefix': 'ad_'}
         )
-        await self.set_state(DSStatus['DISABLED'].name)
-
+        await self.middleware.run_in_thread(
+            registered_services_obj.activedirectory.update_config
+        )
         job.set_progress(40, 'Flushing caches.')
         try:
             await self.middleware.call('idmap.gencache.flush')
@@ -1180,10 +974,10 @@ class ActiveDirectoryService(ConfigService):
 
         job.set_progress(60, 'Regenerating configuration.')
         await self.middleware.call('etc.generate', 'pam')
+        await self.middleware.call('etc.generate', 'nss')
         await self.middleware.call('etc.generate', 'smb')
 
         job.set_progress(60, 'Restarting services.')
         await self.middleware.call('service.restart', 'cifs')
         await self.middleware.call('service.restart', 'idmap')
         job.set_progress(100, 'Successfully left activedirectory domain.')
-        return

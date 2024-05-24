@@ -964,7 +964,7 @@ class KerberosKeytabService(CRUDService):
         if not await self.middleware.call('system.ready'):
             return
 
-        if (await self.middleware.call('activedirectory.get_state')) == 'DISABLED':
+        if (await self.middleware.call('activedirectory.config'))['enable'] is False:
             return
 
         ts = await self.middleware.call('directoryservices.get_last_password_change')

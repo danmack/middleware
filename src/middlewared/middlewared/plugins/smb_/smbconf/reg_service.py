@@ -415,7 +415,6 @@ class ShareSchema(RegistrySchema):
 
         return
 
-
     schema = [
         RegObj("purpose", "tn:purpose", ""),
         RegObj("path_local", None, "",
