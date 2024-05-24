@@ -567,10 +567,11 @@ class Client:
         return True
 
     def close(self):
-        self._ws.close()
-        # Wait for websocketclient thread to close
-        self._closed.wait(1)
-        self._ws = None
+        if self._ws:
+            self._ws.close()
+            # Wait for websocketclient thread to close
+            self._closed.wait(1)
+            self._ws = None
 
 
 def main():
