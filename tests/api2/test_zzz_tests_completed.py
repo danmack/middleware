@@ -21,6 +21,7 @@ def test__thread_count(request):
 
 def test__client_objects(request):
     """Check whether any Client objects still exist, and attempt to close them if so."""
+    gc.collect()
     objs = objects(Client)
     for obj in objs:
         try:
