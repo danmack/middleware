@@ -28,7 +28,7 @@ migrate:
 	migrate
 
 install_dev_tools:
-	bash install-dev-tools
+	sudo bash install-dev-tools
 
 reinstall: stop_service clean install migrate start_service
 
