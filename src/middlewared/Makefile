@@ -22,7 +22,7 @@ copy_systemd_service:
 
 install: install_self copy_systemd_service
 
-install_test: install_self install_dev_tools
+install_test: install_dev_tools .WAIT install_self
 
 migrate:
 	migrate
