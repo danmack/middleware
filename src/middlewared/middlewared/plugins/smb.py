@@ -116,6 +116,7 @@ class SMBService(ConfigService):
 
         enabled_ds = get_enabled_ds()
         if enabled_ds is None:
+            enabled_ds_name = None
             ds_config = {}
         else:
             match enabled_ds.name:
@@ -128,13 +129,15 @@ class SMBService(ConfigService):
                 case _:
                     raise ValueError(f'{enabled_ds.name}: Unexpected directory service')
 
+            enabled_ds_name = enabled_ds.name
+
         idmap_config = self.middleware.call_sync('idmap.query')
         smb_config = self.middleware.call_sync('smb.config')
         smb_shares = self.middleware.call_sync('sharing.smb.query')
         bind_ip_choices = self.middleware.call_sync('smb.bindip_choices')
 
         return generate_smb_conf_dict(
-            enabled_ds.name, ds_config, smb_config, smb_shares, bind_ip_choices, idmap_config
+            enabled_ds_name, ds_config, smb_config, smb_shares, bind_ip_choices, idmap_config
         )
 
     @private
