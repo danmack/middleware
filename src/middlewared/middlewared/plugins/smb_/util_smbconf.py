@@ -216,8 +216,8 @@ def generate_smb_conf_dict(
             'ads dns update': False,
             'winbind nss info': ac['nss_info'].lower(),
             'template homedir': home_path,
-            'winbind enum users': not ac['disable_freenas_cache'],
-            'winbind enum groups': not ac['disable_freenas_cache'],
+            'winbind enum users': ac['enumerate'],
+            'winbind enum groups': ac['enumerate'],
         })
 
     """
