@@ -142,7 +142,10 @@ class KerberosService(ConfigService):
         returns True if ccache can be read and ticket is not expired, otherwise
         returns False
         """
-        ccache_path = await self.ccache_path(data)
+        krb_ccache = krb5ccache[data['ccache']]
+        ccache_path = krb_ccache.value
+        if krb_ccache is krb5ccache.USER:
+            ccache_path += str(data['ccache_uid'])
 
         if check_ticket(ccache_path, False):
             return True
