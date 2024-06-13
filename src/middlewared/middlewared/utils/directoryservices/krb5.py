@@ -7,6 +7,8 @@
 # Tests that require access to a KDC are provided as part of API
 # test suite.
 
+import errno
+import gssapi
 import os
 import subprocess
 import time
@@ -181,9 +183,43 @@ def klist_impl(ccache_path: str) -> list:
     return parse_klist_output(kl.stdout.decode())
 
 
+def check_ticket(ccache_path: str, raise_error: Optional[bool] = True):
+    """
+    Use gssapi library to inpsect the ticket in the specified ccache
+    """
+    try:
+        cred = gssapi.Credentials(store={'ccache': ccache_path})
+    except gssapi.exceptions.MissingCredentialsError:
+        if not raise_error:
+            return False
+
+        raise CallError('Credentials cache does not exist', errno.ENOENT)
+
+    try:
+        cred.inquire()
+    except gssapi.exceptions.InvalidCredentialsError as e:
+        if not raise_error:
+            return False
+
+        raise CallError(str(e))
+
+    except gssapi.exceptions.ExpiredCredenitalsError:
+        if not raise_error:
+            return False
+
+        raise CallError('Kerberos ticket is expired')
+
+    except Exception as e:
+        if not raise_error:
+            return False
+
+        raise CallError(str(e))
+
+    return True
+
+
 def klist_check(ccache_path: str) -> bool:
-    kl = subprocess.run(['klist', '-sc', ccache_path], check=False)
-    return kl.returncode == 0
+    return check_ticket(ccache_path, False)
 
 
 def parse_keytab(keytab_output: list) -> list:

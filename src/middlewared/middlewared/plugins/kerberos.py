@@ -22,6 +22,7 @@ from middlewared.utils.directoryservices.krb5_constants import (
     KRB_TKT_CHECK_INTERVAL,
 )
 from middlewared.utils.directoryservices.krb5 import (
+    check_ticket,
     extract_from_keytab,
     keytab_services,
     klist_impl,
@@ -130,7 +131,7 @@ class KerberosService(ConfigService):
         ),
         Bool('raise_error', default=True)
     )
-    async def check_ticket(self, data, raise_error):
+    def check_ticket(self, data, raise_error):
         """
         Perform very basic test that we have a valid kerberos ticket in the
         specified ccache.
@@ -143,8 +144,7 @@ class KerberosService(ConfigService):
         """
         ccache_path = await self.ccache_path(data)
 
-        klist = await run(['klist', '-s', '-c', ccache_path], check=False)
-        if klist.returncode == 0:
+        if check_ticket(ccache_path, False):
             return True
 
         if raise_error:
