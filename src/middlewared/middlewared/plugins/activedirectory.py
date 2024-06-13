@@ -383,7 +383,7 @@ class ActiveDirectoryService(ConfigService):
             """
             try:
                 domain_info = await self.middleware.run_in_thread(
-                    registered_ds_obj.activedirectory._domain_info,
+                    registered_services_obj.activedirectory._domain_info,
                     new['domainname']
                 )
             except CallError as e:
