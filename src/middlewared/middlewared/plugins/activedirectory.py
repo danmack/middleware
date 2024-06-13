@@ -211,7 +211,7 @@ class ActiveDirectoryService(ConfigService):
         if new['allow_dns_updates']:
             smb = await self.middleware.call('smb.config')
             ip_info = await self.middleware.run_in_thread(
-                registered_ds_obj.activedirectory._get_ip_updates,
+                registered_service_object.activedirectory._get_ip_updates,
                 f'{smb["netbiosname_local"]}.{new["domainname"]}',
                 True
             )
