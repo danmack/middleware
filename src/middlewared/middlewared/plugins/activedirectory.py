@@ -410,7 +410,7 @@ class ActiveDirectoryService(ConfigService):
                 )
 
             try:
-                await self.validate_credentials(new, domain_info['KDC server'])
+                await self.validate_credentials(new, domain_info['kdc_server'])
             except CallError as e:
                 if new['kerberos_principal']:
                     method = "activedirectory.kerberos_principal"
