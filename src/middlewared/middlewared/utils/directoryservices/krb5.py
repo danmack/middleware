@@ -16,6 +16,7 @@ import time
 from .krb5_constants import krb_tkt_flag, KRB_ETYPE
 from middlewared.utils import filter_list
 from tempfile import NamedTemporaryFile
+from typing import Optional
 
 # See lib/krb5/keytab/kt_file.c in MIT kerberos source
 KRB5_KT_VNO = b'\x05\x02'  # KRB v5 keytab version 2, (last changed in 2009)
