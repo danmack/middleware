@@ -137,8 +137,8 @@ class WBClient:
 
         return self._pyuidgid_to_dict(entry)
 
-    def uidgid_to_sid(self, data):
-        mapped = self.users_and_groups_to_sids([data])['mapped']
+    def uidgid_to_idmap_entry(self, data):
+        mapped = self.users_and_groups_to_idmap_entries([data])['mapped']
         if not mapped:
             raise MatchNotFound(str(data))
 

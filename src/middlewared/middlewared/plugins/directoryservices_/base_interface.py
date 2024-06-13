@@ -554,16 +554,8 @@ class DirectoryServiceInterface:
     def del_spn(self, spn_list: list) -> list:
         raise NotImplementedError
 
-    def _add_sid_info_to_entries(self, nss_entries: list) -> list:
+    def _add_sid_info_to_entries(self, nss_entries: list, dom_by_sid: dict) -> list:
         to_remove = []
-        if self.name == 'activedirectory':
-            domain_info = self.call_sync('idmap.query', [], {'extra': {
-                'additional_information': ['DOMAIN_INFO']
-            }})
-            dom_by_sid = {dom['domain_info']['sid']: dom for dom in domain_info}
-        else:
-            dom_by_sid = None
-
         idmaps = self.call_sync('idmap.convert_unixids', nss_entries)
 
         for idx, entry in enumerate(nss_entries):
@@ -591,7 +583,7 @@ class DirectoryServiceInterface:
 
         return nss_entries
 
-    def _get_entries_for_cache(self, entry_type: str) -> list:
+    def _get_entries_for_cache(self, entry_type: str, dom_by_sid: dict) -> list:
         """
         This generator yields batches of NSS entries as tuples containing
         100 entries. This avoids having to allocate huge amounts of memory
@@ -624,7 +616,7 @@ class DirectoryServiceInterface:
             if not self._has_sids:
                 yield out
             else:
-                yield self._add_sid_info_to_entries(out)
+                yield self._add_sid_info_to_entries(out, dom_by_sid)
 
     def fill_cache(self) -> None:
         """
@@ -636,10 +628,20 @@ class DirectoryServiceInterface:
 
         self._assert_is_active()
 
+        if self._ds_type == DSType.AD:
+            domain_info = self.call_sync(
+                'idmap.query',
+                [["domain_info", "!=", None]],
+                {'extra': {'additional_information': ['DOMAIN_INFO']}}
+            )
+            dom_by_sid = {dom['domain_info']['sid']: dom for dom in domain_info}
+        else:
+            dom_by_sid = None
+
         user_cnt = 0
         group_cnt = 0
 
-        for users in self._get_entries_for_cache(IDType.USER):
+        for users in self._get_entries_for_cache(IDType.USER, dom_by_sid):
             for u in users:
                 user_data = u['nss']
                 if u['domain_info']:
@@ -679,7 +681,7 @@ class DirectoryServiceInterface:
                 )
                 user_cnt += 1
 
-        for groups in self._get_entries_for_cache(IDType.GROUP):
+        for groups in self._get_entries_for_cache(IDType.GROUP, dom_by_sid):
             for g in groups:
                 group_data = g['nss']
                 if g['domain_info']:
