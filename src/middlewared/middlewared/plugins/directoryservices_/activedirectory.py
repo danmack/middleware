@@ -37,6 +37,12 @@ class ADDirectoryService(DirectoryServiceInterface):
             nss_module=NssModule.WINBIND.name
         )
 
+    def _get_fqdn(self) -> str:
+        """ Retrieve server hostname for DNS register / unregister """
+        smb_conf = self.call_sync('smb.config')
+        conf = self.config
+        return f'{smb["netbiosname"]}.{conf["domainname"]}'
+
     def _domain_info(
         self,
         domain_in: Optional[str] = None,

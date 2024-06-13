@@ -183,25 +183,19 @@ class DirectoryServiceInterface:
         ngc = self.call_sync('network.configuration.config')
         return f'{ngc["hostname"]}.{ngc["domain"]}'
 
-    def _get_bindips(self) -> list:
+    def _get_current_ips(self) -> set:
         """
         This method is used to restrict the list of IP addresses to register
         in via nsupdate.
         """
-        return None
+        return set(list(self.call_sync('smb.bindip_choices').keys()))
 
     def _get_ip_updates(self, fqdn: str, force: Optional[bool] = False) -> list:
         """ Retrieve list of IPs to register in DNS """
         validated_ips = set()
         to_remove_ips = set()
 
-        ips = [i['address'] for i in self.call_sync('interface.ip_in_use')]
-
-        # User may have selected to override which IPs we will register in DNS
-        if (bindip := self._get_bindips) is not None:
-            to_check = set(bindip) & set(ips)
-        else:
-            to_check = set(ips)
+        to_check = self._get_current_ips()
 
         for ip in to_check:
             try:
@@ -292,7 +286,7 @@ class DirectoryServiceInterface:
             self.unregister_dns(force)
 
         payload = []
-        ip_updates = self.__get_ips_to_register(fqdn, force)
+        ip_updates = self._get_ip_updates(fqdn, force)
         for ip in ip_updates['to_remove']:
             addr = ipaddress.ip_address(ip)
             payload.append({

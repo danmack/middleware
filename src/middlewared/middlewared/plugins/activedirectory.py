@@ -178,8 +178,9 @@ class ActiveDirectoryService(ConfigService):
                 "activedirectory_update.enable",
                 "Active Directory service may not be enabled before data pool is created."
             )
-        ldap_enabled = (await self.middleware.call('ldap.config'))['enable']
-        if ldap_enabled:
+
+        enabled_ds = await self.middleware.run_in_thread(get_enabled_ds) 
+        if enabled_ds and enabled_ds.name != 'activedirectory':
             verrors.add(
                 "activedirectory_update.enable",
                 "Active Directory service may not be enabled while LDAP service is enabled."
@@ -208,58 +209,20 @@ class ActiveDirectoryService(ConfigService):
             )
 
         if new['allow_dns_updates']:
-            ha_mode = await self.middleware.call('smb.get_smb_ha_mode')
-
-            if ha_mode == 'UNIFIED':
-                if await self.middleware.call('failover.status') != 'MASTER':
-                    return
-
             smb = await self.middleware.call('smb.config')
-            addresses = await self.middleware.call(
-                'activedirectory.get_ipaddresses', new, smb, ha_mode
+            ip_info = await self.middleware.run_in_thread(
+                registered_ds_obj.activedirectory._get_ip_updates,
+                f'{smb["netbiosname_local"]}.{new["domainname"]}',
+                True
             )
 
-            if not addresses:
+            if not ip_info['to_add']:
                 verrors.add(
                     'activedirectory_update.allow_dns_updates',
                     'No server IP addresses passed DNS validation. '
                     'This may indicate an improperly configured reverse zone. '
                     'Review middleware log files for details regarding errors encountered.',
                 )
-
-            for a in addresses:
-                addr = ipaddress.ip_address(a)
-                if addr.is_reserved:
-                    verrors.add(
-                        'activedirectory_update.allow_dns_updates',
-                        f'{addr}: automatic DNS update would result in registering a reserved '
-                        'IP address. Users may disable automatic DNS updates and manually '
-                        'configure DNS A and AAAA records as needed for their domain.'
-                    )
-
-                if addr.is_loopback:
-                    verrors.add(
-                        'activedirectory_update.allow_dns_updates',
-                        f'{addr}: automatic DNS update would result in registering a loopback '
-                        'address. Users may disable automatic DNS updates and manually '
-                        'configure DNS A and AAAA records as needed for their domain.'
-                    )
-
-                if addr.is_link_local:
-                    verrors.add(
-                        'activedirectory_update.allow_dns_updates',
-                        f'{addr}: automatic DNS update would result in registering a link-local '
-                        'address. Users may disable automatic DNS updates and manually '
-                        'configure DNS A and AAAA records as needed for their domain.'
-                    )
-
-                if addr.is_multicast:
-                    verrors.add(
-                        'activedirectory_update.allow_dns_updates',
-                        f'{addr}: automatic DNS update would result in registering a multicast '
-                        'address. Users may disable automatic DNS updates and manually '
-                        'configure DNS A and AAAA records as needed for their domain.'
-                    )
 
     @accepts(Ref('activedirectory_update'))
     @returns(Ref('activedirectory_update'))
