@@ -199,7 +199,7 @@ class DirectoryServiceInterface:
 
         for ip in to_check:
             try:
-                result = self.middleware.call_sync('dnsclient.reverse_lookup', {
+                result = self.call_sync('dnsclient.reverse_lookup', {
                     'addresses': [ip]
                 })
             except dns.resolver.NXDOMAIN:
