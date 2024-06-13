@@ -181,7 +181,7 @@ class DirectoryServiceInterface:
     def _get_fqdn(self) -> str:
         """ Retrieve server hostname for DNS register / unregister """
         ngc = self.call_sync('network.configuration.config')
-        return f'{ngc["hostname"]}.{ngc["domain"]}'
+        return f'{ngc["hostname"]}.{ngc["domain"]}.'
 
     def _get_current_ips(self) -> set:
         """
