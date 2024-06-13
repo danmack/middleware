@@ -306,7 +306,7 @@ class DirectoryServiceInterface:
             })
 
         try:
-            self.middleware.call_sync('dns.nsupdate', {'ops': payload})
+            self.call_sync('dns.nsupdate', {'ops': payload})
         except CallError as e:
             self.logger.warning(
                 'Failed to update DNS with payload [%s]: %s',
@@ -367,7 +367,7 @@ class DirectoryServiceInterface:
             })
 
         try:
-            self.middleware.call_sync('dns.nsupdate', {'ops': payload})
+            self.call_sync('dns.nsupdate', {'ops': payload})
         except CallError as e:
             self.logger.warning(
                 'Failed to update DNS with payload [%s]: %s',
