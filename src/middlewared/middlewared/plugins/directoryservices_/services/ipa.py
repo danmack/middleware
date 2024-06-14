@@ -5,11 +5,18 @@ import os
 import subprocess
 
 from .base_interface import DirectoryServiceInterface
+from .cache_mixin import CacheMixin
+from .decorators import (
+    active_controller,
+    kerberos_ticket
+)
+from .kerberos_mixin import KerberosMixin
+from .nsupdate_mixin import NsupdateMixin
 from middlewared.utils.nss.nss_common import NssModule
 from middlewared.utils.directoryservices import (
     ipa, ipa_constants, ldap_utils
 )
-from middlewared.utils.directoryservices.constants import DSStatus, DSType
+from middlewared.utils.directoryservices.constants import DSType
 from middlewared.utils.directoryservices.health import (
     IPAHealthCheckFailReason,
     IPAHealthError
@@ -24,7 +31,12 @@ from middlewared.service_exception import CallError
 IPACTL = ipa_constants.IPACmd.IPACTL.value
 
 
-class IpaDirectoryService(DirectoryServiceInterface):
+class IpaDirectoryService(
+    DirectoryServiceInterface,
+    CacheMixin,
+    KerberosMixin,
+    NsupdateMixin,
+):
     ipa_extra_config = None
     ipa_cacert = None
     ipa_smb_domain_info = None
@@ -71,9 +83,7 @@ class IpaDirectoryService(DirectoryServiceInterface):
                 err = resp.stderr or resp.stdout
                 raise RuntimeError(f'{resp.returncode}: {err.decode()}')
 
-    def summary(self) -> dict:
-        self._assert_is_active()
-
+    def _summary_impl(self) -> dict:
         # setup_legacy just reformats the existing LDAP config
         # and so it won't fail
         domain_info = self.setup_legacy()
@@ -85,12 +95,10 @@ class IpaDirectoryService(DirectoryServiceInterface):
             # the reason why it's unhealthy will appear in the status_msg
             pass
 
-        status = self.status
-        status_msg = None if status is not DSStatus.FAULTED else self._faulted_reason
         return {
            'type': self.name.upper(),
-           'status': self.status.name,
-           'status_msg': status_msg,
+           'ds_status': self.status.name,
+           'ds_status_str': self.status_msg,
         } | {'domain_info': domain_info}
 
     def setup_legacy(self) -> dict:
@@ -163,6 +171,8 @@ class IpaDirectoryService(DirectoryServiceInterface):
                 base64.b64encode(domain_info['password'].encode())
             )
 
+    @kerberos_ticket
+    @active_controller
     def set_spn(self, spn_list: list) -> list:
         """
         Create service entries on remote IPA server
@@ -191,6 +201,8 @@ class IpaDirectoryService(DirectoryServiceInterface):
 
         return output
 
+    @kerberos_ticket
+    @active_controller
     def del_spn(self, spn_list: list) -> list:
         """
         Delete service entries from remote IPA server
@@ -219,6 +231,8 @@ class IpaDirectoryService(DirectoryServiceInterface):
 
         return output
 
+    @kerberos_ticket
+    @active_controller
     def get_smb_domain_info(self):
         """
         This information shouldn't change during normal course of
@@ -283,6 +297,8 @@ class IpaDirectoryService(DirectoryServiceInterface):
             except FileNotFoundError:
                 pass
 
+    @kerberos_ticket
+    @active_controller
     def join(
         self,
         host: str,
@@ -314,8 +330,6 @@ class IpaDirectoryService(DirectoryServiceInterface):
         - add services (NFS / SMB)
         - configure sssd, openldap, smb, etc
         """
-        self._assert_is_active()
-
         try:
             data = self._join_impl(host, domain, realm, server)
         except Exception as e:
@@ -324,6 +338,8 @@ class IpaDirectoryService(DirectoryServiceInterface):
 
         return data
 
+    @kerberos_ticket
+    @active_controller
     def leave(self) -> dict:
         """
         Leave IPA domain. This requires valid administrator kerberos
@@ -332,8 +348,6 @@ class IpaDirectoryService(DirectoryServiceInterface):
         This only performs server-side operations on IPA server. No
         changes are written to TrueNAS server.
         """
-        self._assert_is_active()
-
         leave = subprocess.run([
             IPACTL, '-a', IpaOperation.LEAVE.name
         ], check=False, capture_output=True)

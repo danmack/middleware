@@ -1,6 +1,13 @@
 import subprocess
 
 from .base_interface import DirectoryServiceInterface
+from .cache_mixin import CacheMixin
+from .decorators import (
+    active_controller,
+    kerberos_ticket
+)
+from .kerberos_mixin import KerberosMixin
+from .nsupdate_mixin import NsupdateMixin
 from middlewared.utils.nss.nss_common import NssModule
 from middlewared.utils.directoryservices.ad import (
     get_domain_info,
@@ -9,7 +16,9 @@ from middlewared.utils.directoryservices.ad import (
 from middlewared.utils.directoryservices.ad_constants import (
     MAX_SERVER_TIME_OFFSET
 )
-from middlewared.utils.directoryservices.constants import DSType
+from middlewared.utils.directoryservices.constants import (
+    DSType, DSStatus
+)
 from middlewared.utils.directoryservices.health import (
     ADHealthCheckFailReason,
     ADHealthError
@@ -22,7 +31,12 @@ from time import time
 from typing import Optional
 
 
-class ADDirectoryService(DirectoryServiceInterface):
+class ADDirectoryService(
+    DirectoryServiceInterface,
+    CacheMixin,
+    KerberosMixin,
+    NsupdateMixin,
+):
     _machine_account = None
 
     def __init__(self, middleware, is_enterprise):
@@ -41,7 +55,7 @@ class ADDirectoryService(DirectoryServiceInterface):
         """ Retrieve server hostname for DNS register / unregister """
         smb_conf = self.call_sync('smb.config')
         conf = self.config
-        return f'{smb["netbiosname"]}.{conf["domainname"]}.'
+        return f'{smb_conf["netbiosname"]}.{conf["domainname"]}.'
 
     def _domain_info(
         self,
@@ -69,6 +83,8 @@ class ADDirectoryService(DirectoryServiceInterface):
 
         return domain_info
 
+    @kerberos_ticket
+    @active_controller
     def test_join(self, workgroup: str):
         """
         Test to see whether we're currently joined to an AD domain.
@@ -115,14 +131,14 @@ class ADDirectoryService(DirectoryServiceInterface):
 
         return out
 
+    @kerberos_ticket
+    @active_controller
     def join(self, workgroup: str, force: Optional[bool] = False) -> dict:
         """
         Join an active directory domain. Requires admin kerberos ticket.
         If post-join operations fail, then we attempt to roll back changes on
         the DC.
         """
-        self._assert_is_active()
-
         conf = self.config
 
         cmd = [
@@ -157,9 +173,10 @@ class ADDirectoryService(DirectoryServiceInterface):
             self.call_sync('idmap.gencache.flush')
             raise e from None
 
+    @kerberos_ticket
+    @active_controller
     def leave(self, username: str) -> bool:
         """ Delete our computer object from active directory """
-        self._assert_is_active()
         netads = subprocess.run([
             SMBCmd.NET.value,
             '--use-kerberos', 'required',
@@ -178,15 +195,16 @@ class ADDirectoryService(DirectoryServiceInterface):
         )
         return False
 
-    def summary(self) -> dict:
+    def _summary_impl(self) -> dict:
         """ provide basic summary of AD status """
-        status = self.status
+        self._assert_is_active()
 
-        try:
-            domain_info = self._domain_info()
-        except Exception:
-            self.logger.warning('Failed to retrieve domain information', exc_info=True)
-            domain_info = None
+        domain_info = None
+        if self.status is DSStatus.HEALTHY:
+            try:
+                domain_info = self._domain_info()
+            except Exception:
+                self.logger.warning('Failed to retrieve domain information', exc_info=True)
 
         if domain_info:
             if not self._machine_account:
@@ -203,19 +221,19 @@ class ADDirectoryService(DirectoryServiceInterface):
 
         return {
             'type': self.name.upper(),
-            'status': status.name,
-            'status_msg': self._faulted_reason,
+            'status': self.status.name,
+            'status_msg': self.status_msg,
             'domain_info': domain_info
         }
 
+    @kerberos_ticket
+    @active_controller
     def set_spn(self, spn_list: list) -> None:
         """
         Create service entries on domain controller and update our
         stored kerberos keytab to reflect them. Currently only NFS
         is supported, but we may expand this in the future.
         """
-        self._assert_is_active()
-
         for service in spn_list:
             if service not in ('nfs'):
                 raise ValueError(f'{service}: not a supported service')

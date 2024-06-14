@@ -1,6 +1,6 @@
-from .activedirectory import ADDirectoryService
-from .ipa import IpaDirectoryService
-from .ldap import LdapDirectoryService
+from .services.activedirectory import ADDirectoryService
+from .services.ipa import IpaDirectoryService
+from .services.ldap import LdapDirectoryService
 
 
 all_directory_services = [

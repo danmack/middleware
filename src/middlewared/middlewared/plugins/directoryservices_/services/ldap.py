@@ -32,10 +32,10 @@ class LdapDirectoryService(DirectoryServiceInterface):
         if not self.call_sync('service.started', 'sssd'):
             self.call_sync('service.start', 'sssd', {'silent': False})
 
-    def summary(self) -> dict:
+    def _summary_impl(self) -> dict:
         return {
            'type': self.name.upper(),
-           'status': self.status.name,
-           'status_msg': status_msg,
+           'ds_status': self.status.name,
+           'ds_status_str': self.status_msg,
            'domain_info': None
         }

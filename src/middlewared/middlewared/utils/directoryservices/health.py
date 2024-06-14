@@ -8,7 +8,7 @@ class KRB5HealthCheckFailReason(enum.IntEnum):
     KRB5_CCACHE_PERM = enum.auto()
     KRB5_NO_KEYTAB = enum.auto()
     KRB5_KEYTAB_PERM = enum.auto()
-    KRB5_TICKET_EXPIRED = enum.auto()
+    KRB5_TKT_EXPIRED = enum.auto()
 
 
 class IPAHealthCheckFailReason(enum.IntEnum):
