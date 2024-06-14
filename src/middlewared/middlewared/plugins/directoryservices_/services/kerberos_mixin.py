@@ -32,6 +32,8 @@ class KerberosMixin:
         """
         check_ticket() raises a CallError if ccache is missing or ticket is
         expired
+
+        This method is called by the @keberos_ticket decorator
         """
         krb5.check_ticket(krb5_constants.krb5_constants.krb5ccache.SYSTEM.value)
 
