@@ -35,7 +35,7 @@ class KerberosMixin:
 
         This method is called by the @keberos_ticket decorator
         """
-        krb5.check_ticket(krb5_constants.krb5_constants.krb5ccache.SYSTEM.value)
+        krb5.check_ticket(krb5.krb5_constants.krb5ccache.SYSTEM.value)
 
     def _health_check_krb5(self) -> None:
         """
