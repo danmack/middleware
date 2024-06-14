@@ -22,6 +22,8 @@ class IPAHealthCheckFailReason(enum.IntEnum):
 
 
 class ADHealthCheckFailReason(enum.IntEnum):
+    AD_SECRET_ENTRY_MISSING = enum.auto()
+    AD_SECRET_FILE_MISSING = enum.auto()
     AD_SECRET_INVALID = enum.auto()
     AD_KEYTAB_INVALID = enum.auto()
     AD_NETLOGON_FAILURE = enum.auto()

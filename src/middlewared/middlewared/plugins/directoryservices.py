@@ -12,7 +12,7 @@ from middlewared.plugins.directoryservices_.all import (
 )
 from middlewared.service_exception import CallError, MatchNotFound
 from middlewared.utils.directoryservices.constants import (
-    DSStatus, DSType, NSS_Info, SASL_Wrapping, SSL
+    DSStatus, DSType, NSS_Info
 )
 
 DEPENDENT_SERVICES = ['smb', 'nfs', 'ssh']
@@ -22,6 +22,22 @@ class DirectoryServices(Service):
     class Config:
         service = "directoryservices"
         cli_namespace = "directory_service"
+
+    @no_authz_required
+    @accepts()
+    @returns(Dict(
+        'directoryservices_status',
+        Str('type', enum=[x.value.upper() for x in DSType], null=True),
+        Ref('ds_status', 'status')
+    ))
+    def status(self):
+        if (ds := get_enabled_ds()) is None:
+            return {'type': None, 'status': None}
+
+        return {
+            'type': ds._ds_type.value.upper(),
+            'status': ds.status.name
+        }
 
     @no_authz_required
     @accepts()
@@ -77,24 +93,6 @@ class DirectoryServices(Service):
         with users being unable to authenticate to shares.
         """
         return await job.wrap(await self.middleware.call('directoryservices.cache.refresh'))
-
-    @private
-    @returns(List(
-        'ldap_ssl_choices', items=[
-            Str('ldap_ssl_choice', enum=[x.value for x in list(SSL)], default=SSL.USESSL.value, register=True)
-        ]
-    ))
-    async def ssl_choices(self, dstype):
-        return [x.value for x in list(SSL)]
-
-    @private
-    @returns(List(
-        'sasl_wrapping_choices', items=[
-            Str('sasl_wrapping_choice', enum=[x.value for x in list(SASL_Wrapping)], register=True)
-        ]
-    ))
-    async def sasl_wrapping_choices(self, dstype):
-        return [x.value for x in list(SASL_Wrapping)]
 
     @private
     @returns(OROperator(
@@ -228,6 +226,44 @@ class DirectoryServices(Service):
             setattr(registered_services_obj, initialized.name, initialized)
 
     @private
+    def recover(self):
+        if (ds_obj := get_enabled_ds()) is None:
+            # No directory service is enabled. Nothing to do.
+            return
+
+        ds_obj.recover()
+
+    @private
+    def become_active(self):
+        """
+        Start up routine for when we become active storage controller.
+        Unlike with the single node configuration we do _not_ restart
+        dependent services since we have to rely on failover event
+        handling to do this.
+        """
+        if (ds_obj := get_enabled_ds()) is None:
+            # We still use winbind for local user / group SID resolution
+            self.middleware.call_sync('sevice.restart', 'idmap')
+            return
+
+        ds_obj.activate(background_cache_fill=True)
+
+    @private
+    def become_passive(self):
+        """
+        Start up routine for when we become standby storage controller.
+        Unlike with the single node configuration we do _not_ restart
+        dependent services since we have to rely on failover event
+        handling to do this.
+        """
+        if (ds_obj := get_enabled_ds()) is None:
+            # We still use winbind for local user / group SID resolution
+            self.middleware.call_sync('sevice.restart', 'idmap')
+            return
+
+        ds_obj.deactivate()
+
+    @private
     @job(lock='ds_init', lock_queue_size=1)
     def setup(self, job):
         self.register_objects()
@@ -243,10 +279,9 @@ class DirectoryServices(Service):
         if not self.middleware.call_sync('smb.is_configured'):
             raise CallError('Skipping directory service setup due to SMB service being unconfigured')
 
-        failover_status = self.middleware.call_sync('failover.status')
-        if failover_status not in ('SINGLE', 'MASTER'):
-            self.logger.debug('%s: skipping directory service setup due to failover status', failover_status)
-            job.set_progress(100, f'{failover_status}: skipping directory service setup due to failover status')
+        if self.middleware.call_sync('failover.licensed'):
+            # Allow failover state change to handle rest of directory services setup
+            job.set_progress(100, 'Deferring remaining setup steps until becoming master')
             return
 
         self.middleware.call_sync('sevice.restart', 'idmap')
@@ -267,7 +302,7 @@ class DirectoryServices(Service):
     @returns(Dict(
         'directoryservice_summary',
         Str('type', enum=[x.value.upper() for x in DSType]),
-        Str('ds_status', enum=[x.name for x in DSStatus], register=True),
+        Str('ds_status', enum=[x.name for x in DSStatus], null=True, register=True),
         Str('ds_status_str', null=True),
         Dict('domain_info', additional_attrs=True),
     ))

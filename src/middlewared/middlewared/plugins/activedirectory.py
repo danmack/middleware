@@ -1,20 +1,14 @@
-import errno
-import json
-import ipaddress
 import os
-import contextlib
 
-from middlewared.plugins.smb import SMBCmd
 from middlewared.plugins.kerberos import krb5ccache
 from middlewared.schema import (
-    accepts, Bool, Dict, Int, IPAddr, LDAP_DN, List, NetbiosName, Ref, returns, Str
+    accepts, Bool, Dict, Int, List, NetbiosName, Ref, returns, Str
 )
 from middlewared.service import job, private, ConfigService, ValidationError, ValidationErrors
 from middlewared.service_exception import CallError, MatchNotFound
 import middlewared.sqlalchemy as sa
-from middlewared.utils import run
+from middlewared.utils import filter_list
 from middlewared.utils.directoryservices.ad_constants import (
-    DEFAULT_SITE_NAME,
     MAX_SERVER_TIME_OFFSET
 )
 from middlewared.utils.directoryservices.constants import DSStatus
@@ -155,9 +149,10 @@ class ActiveDirectoryService(ConfigService):
             ):
                 verrors.add(
                     'activedirectory_update.netbiosname',
-                    f'NetBIOS name [{new["netbiosname"]}] appears to be in use by another computer in Active Directory DNS. '
-                    'Further investigation and DNS corrections will be required prior to using the aforementioned name to '
-                    'join Active Directory.'
+                    f'NetBIOS name [{new["netbiosname"]}] appears to be in use '
+                    'by another computer in Active Directory DNS. Further '
+                    'investigation and DNS corrections will be required prior '
+                    'to using the aforementioned name to join Active Directory.'
                 )
         except CallError:
             pass
@@ -173,7 +168,7 @@ class ActiveDirectoryService(ConfigService):
         if not new["enable"]:
             return
 
-        if not self.middleware.call_sync('zfs.pool.query_imported_fast'):
+        if len(self.middleware.call_sync('zfs.pool.query_imported_fast')) < 2:
             verrors.add(
                 "activedirectory_update.enable",
                 "Active Directory service may not be enabled before data pool is created."
@@ -515,48 +510,13 @@ class ActiveDirectoryService(ConfigService):
 
         return self.middleware.call_sync('activedirectory.config')
 
-    @private
-    def add_privileges(self, domain_name, domain_sid):
-        """
-        Grant Domain Admins full control of server
-        """
-        existing_privileges = self.middleware.call_sync(
-            'privilege.query',
-            [["name", "=", domain_name]]
-        )
-        if existing_privileges:
-            return
-
-        self.middleware.call_sync('privilege.create', {
-            'name': domain_name,
-            'ds_groups': [f'{domain_sid}-512'],
-            'allowlist': [{'method': '*', 'resource': '*'}],
-            'web_shell': True
-        })
-
-    @private
-    def remove_privileges(self, domain_name):
-        """
-        Remove any auto-granted domain privileges
-
-        This is called when we leave an active directory domain
-        """
-        existing_privileges = self.middleware.call_sync(
-            'privilege.query',
-            [["name", "=", domain_name]]
-        )
-        if not existing_privileges:
-            return
-
-        self.middleware.call_sync('privilege.delete', existing_privileges[0]['id'])
-
     def __start(self, job):
         """
         Start AD service. In 'UNIFIED' HA configuration, only start AD service
         on active storage controller.
         """
         ds_obj = get_enabled_ds()
-        if ds_obj.name !=  'activedirectory':
+        if ds_obj.name != 'activedirectory':
             # It is not clear how this could happen, but we should fail
             # if the enabled directory service changes between when we update our
             # config to enable AD and then begin starting the service.
@@ -565,10 +525,6 @@ class ActiveDirectoryService(ConfigService):
         ad = ds_obj.config
         smb = self.middleware.call_sync('smb.config')
         workgroup = smb['workgroup']
-        if ds_obj._is_enterprise:
-            # We shouldn't be getting here if we're the passive controller
-            # but we should bail if our state has flapped since update
-            ds_obj._assert_is_active()
 
         dc_info = ds_obj._lookup_dc()
 
@@ -578,13 +534,10 @@ class ActiveDirectoryService(ConfigService):
         if ad['verbose_logging']:
             self.logger.debug('Starting Active Directory service for [%s]', ad['domainname'])
 
-        self.middleware.call_sync('etc.generate', 'smb')
         self.middleware.call_sync('etc.generate', 'hostname')
 
-        """
-        Kerberos realm field must be populated so that we can perform a kinit
-        and use the kerberos ticket to execute 'net ads' commands.
-        """
+        # Double-check our stored kerberos configuration and insert
+        # our AD realm if it doesn't already exist.
         job.set_progress(5, 'Configuring Kerberos Settings.')
         if not ad['kerberos_realm']:
             try:
@@ -606,27 +559,17 @@ class ActiveDirectoryService(ConfigService):
             ds_obj.update_config()
             ad = ds_obj.config
 
-        if not self.middleware.call_sync(
-            'kerberos.check_ticket',
-            {'ccache': krb5ccache.SYSTEM.name},
-            False
-        ):
-            self.middleware.call_sync('kerberos.start')
-
-        """
-        'workgroup' is the 'pre-Windows 2000 domain name'. It must be set to the nETBIOSName value in Active Directory.
-        This must be properly configured in order for Samba to work correctly as an AD member server.
-        'site' is the ad site of which the NAS is a member. If sites and subnets are unconfigured this will
-        default to 'Default-First-Site-Name'.
-        """
-
         job.set_progress(20, 'Detecting Active Directory Site.')
+        # AD site will be None the first time it is configured. We autodetect
+        # from the domain controller.
         if not ad['site']:
+            # update our site based on client site name. This is used as a
+            # hint in alerts to user to make site-specific kerberos configuration.
             ad['site'] = dc_info['client_site_name']
 
         job.set_progress(30, 'Detecting Active Directory NetBIOS Domain Name.')
+        # Set our SMB workgroup to the correct one for the AD domain.
         if workgroup != dc_info['pre-win2k_domain']:
-            self.logger.debug('Updating SMB workgroup to %s', dc_info['pre-win2k_domain'])
             self.middleware.call_sync('datastore.update', 'services.cifs', smb['id'], {
                 'cifs_srv_workgroup': dc_info['pre-win2k_domain']
             })
@@ -636,13 +579,13 @@ class ActiveDirectoryService(ConfigService):
         self.middleware.call_sync('etc.generate', 'smb')
 
         job.set_progress(40, 'Performing testjoin to Active Directory Domain')
-        machine_acct = f'{smb["netbiosname_local"].upper()}$@{ad["domainname"]}'
         is_joined = ds_obj.test_join(workgroup)
         if not is_joined:
             job.set_progress(50, 'Joining Active Directory Domain')
             self.logger.debug(f"Test join to {ad['domainname']} failed. Performing domain join.")
 
-            ds_obj.join(workgroup)
+            domain_info = ds_obj.join(workgroup)
+            machine_acct = f'{domain_info["machine_account"]["sAMAccountName"]}@{ad["domainname"]}'
 
             job.set_progress(75, 'Performing kinit using new computer account.')
 
@@ -653,8 +596,7 @@ class ActiveDirectoryService(ConfigService):
             talking to) and so during this operation we need to hard-code which KDC we use for
             the new kinit.
             """
-            domain_info = ds_obj._domain_info()
-
+            self.middleware.call_sync('kerberos.stop')
             cred = self.middleware.call_sync('kerberos.get_cred', {
                 'dstype': DSType.DS_TYPE_ACTIVEDIRECTORY.name,
                 'conf': {
@@ -662,7 +604,12 @@ class ActiveDirectoryService(ConfigService):
                     'kerberos_principal': machine_acct,
                 }
             })
-            os.unlink('/etc/krb5.conf')
+
+            try:
+                os.unlink('/etc/krb5.conf')
+            except FileNotFoundError:
+                pass
+
             self.middleware.call_sync('kerberos.do_kinit', {
                 'krb5_cred': cred,
                 'kinit-options': {
@@ -670,18 +617,19 @@ class ActiveDirectoryService(ConfigService):
                 }
             })
             self.middleware.call_sync('kerberos.wait_for_renewal')
+
+            # We have our ticket, replace with standard krb5.conf
             self.middleware.call_sync('etc.generate', 'kerberos')
 
             job.set_progress(80, 'Configuring idmap backend and NTP servers.')
-            self.middleware.call_sync('service.update', 'cifs', {'enable': True})
             self.middleware.call_sync('activedirectory.set_ntp_servers')
         else:
             # We are already joined to AD. User may have disabled then re-renabled the plugin
             # Check whether we have valid kerberos principal
             domain_info = ds_obj._domain_info()
-
+            machine_acct = f'{domain_info["machine_account"]["sAMAccountName"]}@{ad["domainname"]}'
             if not ad['kerberos_principal']:
-                if not self.middleware.call_sync('kerberos.keytab.query', [['AD_MACHINE_ACCOUNT']]):
+                if not self.middleware.call_sync('kerberos.keytab.query', [['name', '=', 'AD_MACHINE_ACCOUNT']]):
                     # Force writing of keytab based on stored secrets to our config file.
                     self.middleware.call_sync('activedirectory.check_machine_account_keytab', ad['domainname'])
 
@@ -689,27 +637,17 @@ class ActiveDirectoryService(ConfigService):
                     'kerberos_principal': machine_acct
                 }, {'prefix': 'ad_'})
 
-        self.middleware.call_sync('etc.generate', 'smb')
-        self.middleware.call_sync('service.restart', 'idmap')
-        self.middleware.call_sync('etc.generate', 'pam')
-        self.middleware.call_sync('etc.generate', 'nss')
+            ds_obj.generate_etc()
+            self.middleware.call_sync('service.restart', 'idmap')
+            self.middleware.call_sync('directoryservices.restart_dependent_services')
+            ds_obj.fill_cache()
 
         ds_obj.status = DSStatus.HEALTHY.name
-        job.set_progress(90, 'Restarting dependent services.')
-        self.middleware.call_sync('service.start', 'dscache')
-        self.middleware.call_sync('directoryservices.restart_dependent_services')
         if ad['verbose_logging']:
             self.logger.debug('Successfully started AD service for [%s].', ad['domainname'])
 
-        job.set_progress(95, 'Active Directory start completed.')
         self.middleware.call_sync('service.reload', 'idmap')
-
-        job.set_progress(100, 'Granting privileges to domain admins.')
-        try:
-            domain_info = self.middleware.call_sync ('idmap.domain_info', workgroup)
-            self.add_privileges(ad['domainname'], domain_info['sid'])
-        except Exception:
-            self.logger.warning('Failed to grant Domain Admins privileges', exc_info=True)
+        job.set_progress(100, 'Active Directory start completed.')
 
     async def __stop(self, job, config):
         job.set_progress(0, 'Preparing to stop Active Directory service')
@@ -721,8 +659,6 @@ class ActiveDirectoryService(ConfigService):
         job.set_progress(40, 'Reconfiguring pam and nss.')
         await self.middleware.call('etc.generate', 'pam')
         await self.middleware.call('etc.generate', 'nss')
-        job.set_progress(60, 'clearing caches.')
-        await self.middleware.call('service.stop', 'dscache')
         job.set_progress(80, 'Restarting dependent services.')
         await self.middleware.call('directoryservices.restart_dependent_services')
         job.set_progress(100, 'Active Directory stop completed.')
@@ -806,7 +742,7 @@ class ActiveDirectoryService(ConfigService):
         ds_obj = registered_services_obj.activedirectory
         ad = self.middleware.call_sync('activedirectory.config')
         if not ad['domainname']:
-            raise CallError('Active Directory domain name present in configuration.')
+            raise CallError('Active Directory domain name not present in configuration.')
 
         ad['bindname'] = data.get("username", "")
         ad['bindpw'] = data.get("password", "")
@@ -822,81 +758,16 @@ class ActiveDirectoryService(ConfigService):
             }
         }
 
-        try:
-            self.remove_privileges(ad['domainname'])
-        except Exception:
-            self.logger.warning('Failed to remove Domain Admins privileges', exc_info=True)
-
         job.set_progress(5, 'Obtaining kerberos ticket for privileged user.')
         cred = self.middleware.call_sync('kerberos.get_cred', payload)
         self.middleware.call_sync('kerberos.do_kinit', {'krb5_cred': cred})
 
-        job.set_progress(10, 'Leaving Active Directory domain.')
-        left_successfully = ds_obj.leave(data['username'])
-
-        job.set_progress(15, 'Removing DNS entries')
-        ds_obj.unregister_dns()
-
-        job.set_progress(20, 'Removing kerberos keytab and realm.')
-        krb_princ = self.middleware.call_sync(
-            'kerberos.keytab.query',
-            [('name', '=', 'AD_MACHINE_ACCOUNT')]
-        )
-        if krb_princ:
-            # directly delete via datastore since we don't want to change etc files
-            # and alter kerberos tickets
-            self.middleware.call_sync(
-                'datastore.delete', 'directoryservice.kerberoskeytab', krb_princ[0]['id']
-            )
-
-        if ad['kerberos_realm']:
-            try:
-                self.middleware.call_sync(
-                    'datastore.delete', 'directoryservice.kerberosrealm', ad['kerberos_realm']
-                )
-            except MatchNotFound:
-                pass
-
-        if left_successfully:
-            try:
-                self.middleware.call_sync("directoryservices.secrets.backup")
-            except Exception:
-                self.logger.debug("Failed to remove stale secrets entries.", exc_info=True)
-
-        job.set_progress(30, 'Clearing local Active Directory settings.')
-        payload = {
-            'enable': False,
-            'site': None,
-            'bindname': '',
-            'kerberos_realm': None,
-            'kerberos_principal': '',
-            'domainname': '',
-        }
-        self.middleware.call_sync(
-            'datastore.update', self._config.datastore,
-            ad['id'], payload, {'prefix': 'ad_'}
-        )
-        ds_obj.update_config()
-
-        job.set_progress(40, 'Flushing caches.')
-        try:
-            self.middleware.call_sync('idmap.gencache.flush')
-        except Exception:
-            self.logger.warning("Failed to flush cache after leaving Active Directory.", exc_info=True)
-
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink('/etc/krb5.keytab')
+        job.set_progress(15, 'Leaving active directory domain.')
+        ds_obj.leave(data['username'])
 
         job.set_progress(50, 'Clearing kerberos configuration and ticket.')
         self.middleware.call_sync('kerberos.stop')
 
-        job.set_progress(60, 'Regenerating configuration.')
-        self.middleware.call_sync('etc.generate', 'pam')
-        self.middleware.call_sync('etc.generate', 'pam')
-        self.middleware.call_sync('etc.generate', 'nss')
-        self.middleware.call_sync('etc.generate', 'smb')
-
         job.set_progress(60, 'Restarting services.')
-        self.middleware.call_sync('service.restart', 'cifs')
-        self.middleware.call_sync('service.restart', 'idmap')
+        self.middleware.call_sync('directoryservices.restart_dependent_services')
         job.set_progress(100, 'Successfully left activedirectory domain.')

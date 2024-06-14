@@ -19,6 +19,9 @@ def _normalize_dict(dict_in) -> None:
     """
     for key in list(dict_in.keys()):
         value = dict_in.pop(key)
+        if isinstance(value, dict):
+            _normalize_dict(value)
+
         dict_in[key.replace(' ', '_').lower()] = value
 
     return dict_in

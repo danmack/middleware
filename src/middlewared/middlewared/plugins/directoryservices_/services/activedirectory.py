@@ -1,10 +1,14 @@
+import os
 import subprocess
+import wbclient
 
+from .activedirectory_health_mixin import ADHealthMixin
 from .base_interface import DirectoryServiceInterface
 from .cache_mixin import CacheMixin
 from .decorators import (
     active_controller,
-    kerberos_ticket
+    ttl_cache,
+    kerberos_ticket,
 )
 from .kerberos_mixin import KerberosMixin
 from .nsupdate_mixin import NsupdateMixin
@@ -14,20 +18,18 @@ from middlewared.utils.directoryservices.ad import (
     get_machine_account_status,
     lookup_dc
 )
-from middlewared.utils.directoryservices.ad_constants import (
-    MAX_SERVER_TIME_OFFSET
-)
 from middlewared.utils.directoryservices.constants import (
     DSType, DSStatus
 )
 from middlewared.utils.directoryservices.health import (
-    ADHealthCheckFailReason,
-    ADHealthError
+    ADHealthError,
+    KRB5HealthError,
 )
-from middlewared.utils.directoryservices.krb5_constants import krb5ccache
+from middlewared.utils.directoryservices.krb5_constants import (
+    krb5ccache
+)
 from middlewared.plugins.smb_.constants import SMBCmd, SMBPath
-from middlewared.plugins.idmap_.idmap_winbind import WBClient
-from middlewared.service_exception import CallError
+from middlewared.service_exception import CallError, MatchNotFound
 from time import time
 from typing import Optional
 
@@ -37,8 +39,8 @@ class ADDirectoryService(
     CacheMixin,
     KerberosMixin,
     NsupdateMixin,
+    ADHealthMixin
 ):
-    _machine_account = None
 
     def __init__(self, middleware, is_enterprise):
         super().__init__(
@@ -49,8 +51,40 @@ class ADDirectoryService(
             has_sids=True,
             has_dns_update=True,
             is_enterprise=is_enterprise,
-            nss_module=NssModule.WINBIND.name
+            nss_module=NssModule.WINBIND.name,
+            etc=['pam', 'nss', 'smb', 'kerberos']
         )
+
+    def _cache_online_check(self) -> bool:
+        """
+        This method gets called via a CacheMixin method during cache fill to
+        wait for the domain to come properly online.
+        """
+        offline_domains = self.call_sync(
+            'idmap.online_status',
+            [['online', '=', False]]
+        )
+        if offline_domains:
+            self.logger.debug(
+                'Waiting for the following domains to come online: %s.',
+                ', '.join([x['domain'] for x in offline_domains])
+            )
+
+        return not offline_domains
+
+    def _cache_dom_sid_info(self) -> dict:
+        """
+        This overrides the _cache_dom_sid_info() method provided by CacheMixin
+        and provides idmap configuration for trusted domains which is
+        then used to synthesize stable `id` values for when user.query
+        and group.query return entries from directory services.
+        """
+        domain_info = self.call_sync(
+            'idmap.query',
+            [["domain_info", "!=", None]],
+            {'extra': {'additional_information': ['DOMAIN_INFO']}}
+        )
+        return {dom['domain_info']['sid']: dom for dom in domain_info}
 
     def _get_fqdn(self) -> str:
         """ Retrieve server hostname for DNS register / unregister """
@@ -89,9 +123,13 @@ class ADDirectoryService(
         domain_in: Optional[str] = None,
         retry: Optional[bool] = True
     ) -> dict:
+        """
+        Look up some basic information about the domain controller that
+        is currently set in the libads server affinity cache.
+        """
         domain = domain_in or self.config['domainname']
         try:
-            dc_info  = lookup_dc(domain)
+            dc_info = lookup_dc(domain)
         except Exception as e:
             if not retry:
                 raise e from None
@@ -124,6 +162,7 @@ class ADDirectoryService(
         err_msg = netads.stderr.decode()
         log_path = f'{SMBPath.LOGDIR.platform()}/domain_testjoin_{time()}.log'
         with open(log_path, 'w') as f:
+            os.fchmod(f.fileno(), 0o600)
             f.write(err_msg)
             f.flush()
 
@@ -145,12 +184,83 @@ class ADDirectoryService(
             f'Please review logs at {log_path} and file a bug report.'
         )
 
+    def activate(self, background_cache_fill: Optional[bool] = False) -> None:
+        """
+        Activate our bind to active directory. This may be called currently
+        from the AD plugin or from `directoryservices.become_active`.
+        """
+        self.generate_etc()
+        self.call_sync('service.stop', 'idmap')
+        self.call_sync('service.start', 'idmap', {'silent': False})
+        self.call_sync('kerberos.start')
+        if background_cache_fill:
+            # background job to rebuild the UI / middleware cache
+            self.call_sync('directoryservices.cache.refresh')
+        else:
+            self.fill_cache()
+        self.call_sync('alert.run_source', 'ActiveDirectoryDomainBind')
+
+    def deactivate(self) -> None:
+        """
+        Deactivate our domain bind. This may be called when we are stopping the
+        AD service or when `directoryservices.become_passive` is called.
+        """
+        self.generate_etc()
+        self.call_sync('service.restart', 'idmap')
+        self.call_sync('kerberos.stop')
+
     def _do_post_join_actions(self, force: bool):
-        out = self.register_dns(force)
+        self.register_dns(force)
+
+        # set NFS SPN. This also forces write to our keytabs DB
         self.set_spn(['nfs'])
+
+        # The password in secrets.tdb has been replaced so make
+        # sure we have it backed up in our config.
         self.call_sync('directoryservices.secrets.backup')
 
-        return out
+        # Force an update to stale cache
+        dom_info = self._summary_domain_info(ttl_cache_refresh=True)
+        self.activate()
+
+        """
+        # regenerate our config files now that we're joined to AD.
+        self.generate_etc()
+
+        # restart winbindd so that running configuration is definitely
+        # correct
+        self.call_sync('service.restart', 'idmap')
+
+        # Filling our cache forces wait until winbind considers itself online
+        self.fill_cache()
+        """
+        # get our domain from winbind
+        dom = wbclient.Ctx().domain()
+
+        existing_privileges = self.call_sync(
+            'privilege.query',
+            [["name", "=", dom.dns_name.upper()]]
+        )
+
+        # By this point we are healthy and can set our status as such
+        self.status = DSStatus.HEALTHY.name
+
+        if not existing_privileges:
+            # grant the domain admins group full admin rights to NAS
+            try:
+                self.call_sync('privilege.create', {
+                    'name': dom.dns_name.upper(),
+                    'ds_groups': [f'{dom.sid}-512'],
+                    'allowlist': [{'method': '*', 'resource': '*'}],
+                    'web_shell': True
+                })
+            except Exception:
+                self.logger.warning(
+                    "Failed to grant domain administrators access to "
+                    "TrueNAS API.", exc_info=True
+                )
+
+        return dom_info
 
     @kerberos_ticket
     @active_controller
@@ -194,10 +304,70 @@ class ADDirectoryService(
             self.call_sync('idmap.gencache.flush')
             raise e from None
 
+    def _post_leave(self):
+        config = self.config
+
+        # try to unregister our DNS entries
+        try:
+            self.unregister_dns()
+        except Exception:
+            self.logger.warning(
+                'Failed to clean up DNS entries. Further action may be required '
+                'by an Active Directory administrator.', exc_info=True
+            )
+
+        if krb_princ := self.call_sync('kerberos.keytab.query', [
+            ('name', '=', 'AD_MACHINE_ACCOUNT')
+        ]):
+            self.call_sync(
+                'datastore.delete',
+                'directoryservice.kerberoskeytab',
+                krb_princ[0]['id']
+            )
+
+        if config['kerberos_realm']:
+            try:
+                self.call_sync(
+                    'datastore.delete',
+                    'directoryservice.kerberosrealm',
+                    config['kerberos_realm']['id']
+                )
+            except MatchNotFound:
+                pass
+
+        try:
+            self.call_sync('directoryservices.secrets.backup')
+        except Exception:
+            self.logger.debug("Failed to remove stale secrets entries.", exc_info=True)
+
+        # reset our config
+        self.call_sync('datastore.update', self._datastore_name, config['id'], {
+            'enable': False,
+            'site': None,
+            'bindname': '',
+            'kerberos_realm': None,
+            'kerberos_principal': '',
+            'domainname': '',
+        }, {'prefix': self._datastore_prefix})
+        self.update_config()
+        self.status = DSStatus.DISABLED.name
+
+        # Clean up privileges
+        existing_privileges = self.call_sync('privilege.query', [
+            ["name", "=", config['domainname']]
+        ])
+        if existing_privileges:
+            self.call_sync('privilege.delete', existing_privileges[0]['id'])
+
+        self.generate_etc()
+        self.call_sync('idmap.gencache.flush')
+        self.call_sync('service.restart', 'idmap')
+
     @kerberos_ticket
     @active_controller
-    def leave(self, username: str) -> bool:
+    def leave(self, username: str) -> None:
         """ Delete our computer object from active directory """
+        self.status = DSStatus.LEAVING.name
         netads = subprocess.run([
             SMBCmd.NET.value,
             '--use-kerberos', 'required',
@@ -207,14 +377,57 @@ class ADDirectoryService(
         ], check=False, capture_output=True)
 
         # remove cached machine account information
-        self._machine_account = None
-        if netads.returncode == 0:
-            return True
+        if netads.returncode != 0:
+            self.logger.warning(
+                'Failed to cleanly leave domain. Further action may be required '
+                'by an Active Directory administrator: %s', netads.stderr.decode()
+            )
 
-        self.logger.warning(
-            'Failed to cleanly leave domain: %s', netads.stderr.decode()
+        self._post_leave()
+
+    @ttl_cache()
+    def _summary_domain_info(self) -> dict:
+        domain_info = self._domain_info()
+
+        # since this is cached we don't want to store the time as reported by
+        # the domain controller. domain_info also contains reports on clock
+        # slew via `server_time_offset` key
+        domain_info.pop('server_time')
+
+        machine_account = get_machine_account_status(
+            domain_info['ldap_server']
         )
-        return False
+        machine_account['last_password_change'] = domain_info.pop('last_machine_account_password_change')
+
+        dc_info = lookup_dc(
+            domain_info['ldap_server']
+        )
+
+        # select only keys we want from `lookup dc` response.
+        output = {
+            'forest': dc_info['forest'],
+            'domain': dc_info['domain'],
+            'pre-win2k_domain': dc_info['pre-win2k_domain'],
+            'domain_contoller': dc_info['domain_controller'],
+            'domain_contoller_address': dc_info['information_for_domain_controller'],
+            'domain_controller_site': dc_info['server_site_name'],
+        } | domain_info
+        output['machine_account'] = machine_account
+
+        return output
+
+    def _recover_impl(self) -> None:
+        try:
+            self.health_check()
+            self.status = DSStatus.HEALTHY.name
+            return
+        except KRB5HealthError as e:
+            self._recover_krb5(e)
+        except ADHealthError as e:
+            self._recover_ad(e)
+
+        # Hopefully this has fixed the issue
+        self.health_check()
 
     def _summary_impl(self) -> dict:
         """ provide basic summary of AD status """
@@ -223,22 +436,9 @@ class ADDirectoryService(
         domain_info = None
         if self.status is DSStatus.HEALTHY:
             try:
-                domain_info = self._domain_info()
+                domain_info = self._summary_domain_info()
             except Exception:
                 self.logger.warning('Failed to retrieve domain information', exc_info=True)
-
-        if domain_info:
-            if not self._machine_account:
-                try:
-                    data = get_machine_account_status(
-                        domain_info['ldap_server']
-                    )
-                    self._machine_account = data
-                    domain_info['machine_account'] = data.copy()
-                except Exception:
-                    self.logger.warning('Failed to retrieve AD machine account status', exc_info=True)
-            else:
-                domain_info['machine_account'] = self._machine_account.copy()
 
         return {
             'type': self.name.upper(),
@@ -276,94 +476,6 @@ class ADDirectoryService(
 
         self.call_sync('kerberos.keytab.store_ad_keytab')
 
-    def _health_check_impl(self):
-        """
-        Perform basic health checks for AD connection.
-
-        This method is called periodically from our alert framework.
-        """
-
-        # We should validate some basic AD configuration before the common
-        # kerberos health checks. This will expose issues with clock slew
-        # and invalid stored machine account passwords
-        try:
-            domain_info = self.domain_info()
-        except Exception:
-            domain_info = None
-
-        if domain_info:
-            if domain_info['server_time_offset'] > MAX_SERVER_TIME_OFFSET:
-                self._faulted_reason = (
-                    'Time offset from Active Directory domain exceeds maximum '
-                    'permitted value. This may indicate an NTP misconfiguration.'
-                )
-                raise ADHealthError(
-                    ADHealthCheckFailReason.NTP_EXCESSIVE_SLEW,
-                    self._faulted_reason
-                )
-            try:
-                # This performs some basic error recovery attempt
-                # by restoring a backed-up copy of our secret
-                self.call_sync(
-                    'activedirectory.check_machine_account_secret',
-                    domain_info['kdc_server']
-                )
-            except CallError as e:
-                self._faulted_reason = e.errmsg
-                raise ADHealthError(
-                    ADHealthCheckFailReason.AD_SECRET_INVALID,
-                    self._faulted_reason
-                )
-
-            try:
-                # This also performs some basic error recovery
-                # by attempting to generate a new keyab based on our
-                # stored secret
-                self.call_sync(
-                    'activedirectory.check_machine_account_keytab',
-                    domain_info['kdc_server']
-                )
-            except CallError as e:
-                self._faulted_reason = e.errmsg
-                raise ADHealthError(
-                    ADHealthCheckFailReason.AD_KEYTAB_INVALID,
-                    self._faulted_reason
-                )
-
-        # Now for general kerberos health checks
+    def _health_check_impl(self) -> None:
+        self._health_check_ad()
         self._health_check_krb5()
-
-        # Now check that winbindd is started
-
-        if not self.call_sync('service.started', 'idmap'):
-            try:
-                self.call_sync('service.start', 'idmap', {'silent': False})
-            except CallError as e:
-                self._faulted_reason = str(e.errmsg)
-                raise ADHealthError(
-                    ADHealthCheckFailReason.WINBIND_STOPPED,
-                    self._faulted_reason
-                )
-
-        # Winbind is running and so we can check our netlogon connection
-        # First open the libwbclient handle. This should in theory never fail.
-        try:
-            ctx = WBClient()
-        except Exception as e:
-            self._faulted_reason = str(e)
-            raise ADHealthError(
-                ADHealthCheckFailReason.AD_WBCLIENT_FAILURE,
-                self._faulted_reason
-            )
-
-        # If needed we can replace `ping_dc()` with `check_trust()`
-        # for now we're defaulting to lower-cost test unless it gives
-        # false reports of being up
-        try:
-            ctx.ping_dc()
-        except Exception as e:
-            self._faulted_reason = str(e)
-            raise ADHealthError(
-                ADHealthCheckFailReason.AD_TRUST_BROKEN,
-                self._faulted_reason
-            )

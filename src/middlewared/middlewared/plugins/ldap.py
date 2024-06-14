@@ -19,6 +19,7 @@ from middlewared.plugins.directoryservices_.all import (
 from middlewared.plugins.idmap import DSType
 from middlewared.plugins.ldap_.ldap_client import LdapClient
 from middlewared.plugins.ldap_ import constants
+from middlewared.utils.directoryservices.constants import SSL
 from middlewared.utils.directoryservices.ldap_utils import hostnames_to_uris
 from middlewared.utils.directoryservices.ipa_constants import IpaConfigName
 from middlewared.utils.directoryservices.krb5 import ktutil_list_impl
@@ -119,29 +120,6 @@ class LDAPClient(Service):
                 self.logger.debug("Unable to parse results: %s", r)
 
         return res
-
-    @accepts(Dict(
-        'get-samba-domain',
-        Ref('ldap-configuration'),
-    ))
-    def get_samba_domains(self, data):
-        """
-        This returns a list of configured samba domains on the LDAP
-        server. This is used to determine whether the LDAP server has
-        The Samba LDAP schema. In this case, the SMB service can be
-        configured to use Samba's ldapsam passdb backend.
-        """
-        try:
-            results = LdapClient.search(
-                data['ldap-configuration'],
-                data['ldap-configuration']['basedn'],
-                pyldap.SCOPE_SUBTREE,
-                '(objectclass=sambaDomain)'
-            )
-        except Exception as e:
-            self._convert_exception(e)
-
-        return self.parse_results(results)
 
     @accepts(Dict(
         'get-root-dse',
@@ -369,12 +347,14 @@ class LDAPService(ConfigService):
         return await self.middleware.call('directoryservices.nss_info_choices', 'LDAP')
 
     @accepts(roles=['DIRECTORY_SERVICE_READ'])
-    @returns(List('ssl_choices', items=[Ref('ldap_ssl_choice', 'ssl')]))
+    @returns(List('ssl_choices', items=[
+        Str('ldap_ssl_choice', enum=[x.value for x in list(SSL)], default=SSL.USESSL.value, register=True)
+    ]))
     async def ssl_choices(self):
         """
         Returns list of SSL choices.
         """
-        return await self.middleware.call('directoryservices.ssl_choices', 'LDAP')
+        return [x.value for x in list(SSL)]
 
     @private
     async def common_validate(self, new, old, verrors):
@@ -832,15 +812,18 @@ class LDAPService(ConfigService):
         # User has provided us with hostnames of IPA severs that _should_
         # also be KDCs for domain.
         job.set_progress(5, 'Preparing to kinit to IPA domain')
+        self.logger.debug("XXX: extra config: %s", ds.ipa_extra_config)
+
+        username = f'{ds.ipa_extra_config["username"]}@{ds.ipa_extra_config["realm"]}'
         self.middleware.call_sync('kerberos.do_kinit', {
             'krb5_cred': {
-                'username': ds.ipa_extra_config['username'],
+                'username': username,
                 'password': ldap['bindpw']
             },
             'kinit-options': {
                 'kdc_override': {
-                    'domain': ds.ipa_extra_config['domain'],
-                    'kdc': ds.ipa_extra_config['target_server']
+                    'domain': ds.ipa_extra_config['realm'],
+                    'kdc': ds.ipa_extra_config['target_server'] 
                 }
             }
         })
@@ -935,6 +918,7 @@ class LDAPService(ConfigService):
         if ds is None:
             raise CallError('Directory sevice is not enabled')
 
+        ds.update_config()
         ldap = ds.config
         self.create_sssd_dirs()
 
@@ -952,10 +936,7 @@ class LDAPService(ConfigService):
             self.middleware.call_sync('kerberos.start')
 
         job.set_progress(70, 'Generating configuration files')
-        self.middleware.call_sync('etc.generate', 'rc')
-        self.middleware.call_sync('etc.generate', 'ldap')
-        self.middleware.call_sync('etc.generate', 'pam')
-        self.middleware.call_sync('etc.generate', 'ipa')
+        ds.generate_etc()
 
         job.set_progress(70, 'Starting sssd service')
         self.middleware.call_sync('service.restart', 'sssd')
@@ -971,17 +952,14 @@ class LDAPService(ConfigService):
         ds.health_check()
 
     @private
-    async def __stop(self, job):
+    def __stop(self, job):
         job.set_progress(0, 'Preparing to stop LDAP directory service.')
         job.set_progress(10, 'Rewriting configuration files.')
         self.middleware.call_sync('etc.generate', 'rc')
         self.middleware.call_sync('etc.generate', 'ldap')
         self.middleware.call_sync('etc.generate', 'pam')
+        self.middleware.call_sync('etc.generate', 'nss')
         self.middleware.call_sync('etc.generate', 'ipa')
-
-        job.set_progress(50, 'Clearing directory service cache.')
-        self.middleware.call_sync('service.stop', 'dscache')
-
         job.set_progress(80, 'Stopping sssd service.')
         self.middleware.call_sync('service.stop', 'sssd')
         job.set_progress(100, 'LDAP directory service stopped.')

@@ -10,12 +10,42 @@ from middlewared.plugins.idmap_.idmap_constants import (
     SID_LOCAL_USER_PREFIX,
     SID_LOCAL_GROUP_PREFIX,
 )
-
-
-ID_TYPE_BOTH_BACKENDS = ('RID', 'AUTORID')
+from middlewared.service_exception import CallError
+from time import sleep
 
 
 class CacheMixin:
+    CACHE_DOMAIN_ONLINE_CHECK_TRIES = 60
+
+    def _cache_online_check(self) -> bool:
+        """
+        This method provides way for individual services to wait until
+        state is settled before filling cache.
+        """
+        return True
+
+    def _cache_online_check_wait(self) -> None:
+        tries = 0
+        while tries <= self.CACHE_DOMAIN_ONLINE_CHECK_TRIES:
+            if self._cache_online_check():
+                return
+
+            sleep(1)
+
+        raise CallError('Timeout out waiting for domain to come online')
+
+    def _cache_dom_sid_info(self) -> None:
+        """
+        Retrieve idmap ranges for trusted domains and return as dictionary
+        keyed by sid
+
+        Sample entry:
+        'S-1-5-21-<domain subauths>': {'range_low': <int>, 'range_high': <int>}
+
+        Currently this is only implemented for Active Directory, but in future
+        we can expand to also include trust information for IPA domains.
+        """
+        pass
 
     def _add_sid_info_to_entries(self, nss_entries: list, dom_by_sid: dict) -> list:
         to_remove = []
@@ -96,6 +126,10 @@ class CacheMixin:
 
         self._assert_is_active()
 
+        # Give the service a chance to settle down
+        self._cache_online_check_wait()
+
+        dom_by_sid = self._cache_dom_sid_info()
         if self._ds_type == DSType.AD:
             domain_info = self.call_sync(
                 'idmap.query',

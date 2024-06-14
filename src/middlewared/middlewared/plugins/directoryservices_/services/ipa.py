@@ -12,6 +12,7 @@ from .decorators import (
 )
 from .kerberos_mixin import KerberosMixin
 from .nsupdate_mixin import NsupdateMixin
+from functools import cache
 from middlewared.utils.nss.nss_common import NssModule
 from middlewared.utils.directoryservices import (
     ipa, ipa_constants, ldap_utils
@@ -27,6 +28,7 @@ from middlewared.utils.directoryservices.ipactl_constants import (
 )
 from middlewared.plugins.ldap_.ldap_client import LdapClient
 from middlewared.service_exception import CallError
+from typing import Optional
 
 IPACTL = ipa_constants.IPACmd.IPACTL.value
 
@@ -38,8 +40,6 @@ class IpaDirectoryService(
     NsupdateMixin,
 ):
     ipa_extra_config = None
-    ipa_cacert = None
-    ipa_smb_domain_info = None
 
     def __init__(self, middleware, is_enterprise):
         """
@@ -53,8 +53,25 @@ class IpaDirectoryService(
             datastore_prefix='ldap_',
             has_sids=True,
             is_enterprise=is_enterprise,
-            nss_module=NssModule.SSS.name
+            nss_module=NssModule.SSS.name,
+            etc=['ldap', 'pam', 'nss', 'kerberos', 'ipa']
         )
+
+    def activate(self, background_cache_fill: Optional[bool]=False) -> None:
+        self.generate_etc()
+        self.call_sync('service.stop', 'sssd')
+        self.call_sync('service.start', 'sssd', {'silent': False})
+        self.call_sync('kerberos.start')
+        if background_cache_fill:
+            self.call_sync('directoryservice.cache.refresh')
+        else:
+            self.fill_cache()
+
+
+    def deactivate(self):
+        self.generate_etc()
+        self.call_sync('service.stop', 'sssd')
+        self.call_sync('kerberos.stop')
 
     def is_enabled(self) -> bool:
         """
@@ -233,27 +250,23 @@ class IpaDirectoryService(
 
     @kerberos_ticket
     @active_controller
+    @cache
     def get_smb_domain_info(self):
         """
         This information shouldn't change during normal course of
         operations in a FreeIPA domain. Cache a copy of it for future
         reference.
         """
-        if self.ipa_smb_domain_info:
-            return self.ipa_smb_domain_info.copy()
-
         getdom = subprocess.run([
             IPACTL, '-a', IpaOperation.SMB_DOMAIN_INFO.name,
         ], check=False, capture_output=True)
 
         resp = self._parse_ipa_response(getdom)
         self.ipa_smb_domain_info = resp[0] if resp else {}
-        return self.ipa_smb_domain_info.copy()
+        return self.ipa_smb_domain_info
 
+    @cache
     def get_ipa_cacert(self, force=False) -> str:
-        if self.ipa_cacert and not force:
-            return self.ipa_cacert
-
         getca = subprocess.run([
             IPACTL, '-a', IpaOperation.GET_CACERT_FROM_LDAP.name,
         ], check=False, capture_output=True)
@@ -269,8 +282,7 @@ class IpaDirectoryService(
         ipa.write_ipa_default_config(host, domain, realm, server)
 
         ipa_cacert = self.get_ipa_cacert(True)
-        cacert_path = ipa.write_ipa_cacert(ipa_cacert.encode())
-        self.logger.debug(f"XXX: {cacert_path}")
+        ipa.write_ipa_cacert(ipa_cacert.encode())
 
         # Now we should be able to join
         join = subprocess.run([

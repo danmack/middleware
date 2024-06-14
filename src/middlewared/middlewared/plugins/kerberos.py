@@ -465,7 +465,9 @@ class KerberosService(ConfigService):
 
     @private
     async def renew(self):
-        if not await self.check_ticket({'ccache': krb5ccache.SYSTEM.name}, False):
+        if not await self.middleware.call('kerberos.check_ticket', {
+            'ccache': krb5ccache.SYSTEM.name
+        }, False):
             self.logger.warning('Kerberos ticket is unavailable. Performing kinit.')
             return await self.start()
 
@@ -951,6 +953,11 @@ class KerberosKeytabService(CRUDService):
                 {'name': 'AD_MACHINE_ACCOUNT', 'file': keytab_file},
                 {'prefix': self._config.datastore_prefix}
             )
+
+        if not ad['kerberos_principal']:
+            self.middleware.call_sync('datastore.update', 'directoryservice.activedirectory', 1, {
+                'ad_kerberos_principal': f'{ad["netbiosname"]}$@{ad["domainname"]}'
+            })
 
     @periodic(3600)
     @private

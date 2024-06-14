@@ -119,14 +119,14 @@ class WBClient:
         )
         return self._as_dict(data, True)
 
-    def sid_to_uidgid_entry(self, sid):
+    def sid_to_idmap_entry(self, sid):
         mapped = self.sids_to_users_and_groups([sid])['mapped']
         if not mapped:
             raise MatchNotFound(sid)
 
         return mapped[sid]
 
-    def name_to_uidgid_entry(self, name):
+    def name_to_idmap_entry(self, name):
         try:
             entry = self.ctx.uid_gid_object_from_name(name)
         except wbclient.WBCError as e:
@@ -142,7 +142,7 @@ class WBClient:
         if not mapped:
             raise MatchNotFound(str(data))
 
-        return mapped[f'{data["id_type"]}:{data["id"]}']
+        return mapped[f'{IDType[data["id_type"]].wbc_str()}:{data["id"]}']
 
     def all_domains(self):
         return self.ctx.all_domains()

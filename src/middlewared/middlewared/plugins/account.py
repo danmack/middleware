@@ -14,7 +14,7 @@ import wbclient
 from pathlib import Path
 from contextlib import suppress
 
-from middlewared.schema import accepts, Bool, Dict, Int, List, Password, Patch, returns, Str, LocalUsername
+from middlewared.schema import accepts, Bool, Dict, Int, List, Password, Patch, returns, SID, Str, LocalUsername
 from middlewared.service import (
     CallError, CRUDService, ValidationErrors, no_auth_required, no_authz_required, pass_app, private, filterable, job
 )
@@ -1057,7 +1057,8 @@ class UserService(CRUDService):
         Int('pw_uid'),
         Int('pw_gid'),
         List('grouplist'),
-        Dict('sid_info'),
+        SID('sid', null=True),
+        Str('source', enum=[mod.name for mod in list(NssModule)]),
         Bool('local'),
         register=True,
     ))
@@ -1166,12 +1167,7 @@ class UserService(CRUDService):
                 # winbindd is not running.
                 sid = None
 
-            if sid:
-                user_obj['sid_info'] = {
-                    'sid': sid,
-                }
-            else:
-                user_obj['sid_info'] = None
+            user_obj['sid'] = sid
 
         return user_obj
 
@@ -2067,8 +2063,8 @@ class GroupService(CRUDService):
         Str('gr_name'),
         Int('gr_gid'),
         List('gr_mem'),
-        Dict('sid_info'),
-        Str('source'),
+        SID('sid', null=True),
+        Str('source', enum=[mod.name for mod in list(NssModule)]),
         Bool('local'),
     ))
     def get_group_obj(self, data):
@@ -2136,7 +2132,7 @@ class GroupService(CRUDService):
 
             if idmap_ctx is not None:
                 try:
-                    sid = idmap_ctx.uidgid_to_entry({
+                    sid = idmap_ctx.uidgid_to_idmap_entry({
                         'id_type': 'GROUP',
                         'id': grp_obj['gr_gid']
                     })['sid']

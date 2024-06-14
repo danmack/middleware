@@ -1,13 +1,14 @@
 import stat
 
-from copy import deepcopy
-from .decorators import active_controller
+from .decorators import (
+    active_controller,
+    ttl_cache,
+)
 from middlewared.utils.directoryservices.constants import (
     DSStatus, DSType
 )
 from middlewared.service_exception import CallError
 from os import stat_result
-from time import monotonic
 from typing import Callable, Union, Optional
 
 
@@ -28,11 +29,11 @@ class DirectoryServiceInterface:
         '_datastore_prefix',
         '_middleware',
         '_nss_module',
-        '_has_sids',
         '_has_dns_update',
         '_is_enterprise',
+        '_has_sids',
         '_faulted_reason',
-        '_config'
+        '_etc'
     )
 
     def __init__(
@@ -43,8 +44,9 @@ class DirectoryServiceInterface:
         datastore_prefix: str,
         nss_module: str,
         is_enterprise: bool,
+        etc: list,
         has_sids: Optional[bool] = False,
-        has_dns_update: Optional[bool] = False
+        has_dns_update: Optional[bool] = False,
     ):
         self._middleware = middleware
         self._ds_type = ds_type
@@ -52,12 +54,12 @@ class DirectoryServiceInterface:
         self._datastore_name = datastore_name
         self._datastore_prefix = datastore_prefix
         self._nss_module = nss_module
-        self._has_sids = has_sids
         self._has_dns_update = has_dns_update
+        self._has_sids = has_sids
         self._is_enterprise = is_enterprise
         self._status = None
         self._faulted_reason = None
-        self._config = None
+        self._etc = etc
 
     @property
     def ds_type(self) -> DSType:
@@ -164,24 +166,25 @@ class DirectoryServiceInterface:
         We cache for 60 seconds to mitigate impact of API users polling
         for the directory services status.
         """
-        if self._config is None or monotonic() > self._config['expires']:
-            self.update_config()
+        return self._get_config()
 
-        return deepcopy(self._config['config'])
-
-    def update_config(self) -> None:
+    @ttl_cache(ttl=60)
+    def _get_config(self) -> None:
         """
         Force an update of the in-memory datastore cache
         """
-        _conf = self.call_sync('datastore.config', self._datastore_name, {
+        conf = self.call_sync('datastore.config', self._datastore_name, {
             'prefix': self._datastore_prefix,
         })
-        _conf['enumerate'] = not _conf.pop('disable_freenas_cache', False)
+        conf['enumerate'] = not conf.pop('disable_freenas_cache', False)
+        return conf
 
-        self._config = {
-            'expires': monotonic() + 60,
-            'config': _conf
-        }
+    def update_config(self) -> None:
+        self._get_config(ttl_cache_refresh=True)
+
+    def generate_etc(self):
+        for etc_file in self._etc:
+            self.call_sync('etc.generate', etc_file)
 
     def _perm_check(
         self,
@@ -256,6 +259,42 @@ class DirectoryServiceInterface:
         return True
 
     def _summary_impl(self):
+        raise NotImplementedError
+
+    def _recover_impl(self):
+        raise NotImplementedError
+
+    def recover(self) -> None:
+        """
+        Attempt to recover our directory service from a FAULTED state.
+
+        This may be a stretch in many cases, but it's better than
+        nothing.
+        """
+        match self.status:
+            case DSStatus.JOINING | DSStatus.LEAVING:
+                self.logger.debug(
+                    "Directory service configuration changes are "
+                    "in progress. Skipping recovery attempt."
+                )
+            case DSStatus.HEALTHY:
+                # perhaps we're mistaken
+                try:
+                    self.health_check()
+                    return
+                except Exception:
+                    # very mistaken
+                    pass
+            case _:
+                # FAULTED
+                pass
+
+        return self._recover_impl()
+
+    def activate(self):
+        raise NotImplementedError
+
+    def deactivate(self):
         raise NotImplementedError
 
     @active_controller

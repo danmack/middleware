@@ -3,6 +3,7 @@ import enum
 MAX_SERVER_TIME_OFFSET = 180
 
 DEFAULT_SITE_NAME = 'Default-First-Site-Name'
+MACHINE_ACCOUNT_KT_NAME = 'AD_MACHINE_ACCOUNT'
 
 
 class ADUserAccountControl(enum.IntFlag):

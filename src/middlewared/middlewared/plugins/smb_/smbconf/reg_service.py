@@ -222,7 +222,8 @@ class ShareSchema(RegistrySchema):
         if not val:
             return
 
-        ad_enabled = entry.middleware.call_sync("activedirectory.get_state") != "DISABLED"
+        ds_state = entry.middleware.call_sync('directoryservices.get_state')
+        ad_enabled = ds_state['activedirectory'] != 'DISABLED'
         data_out.update({
             "recycle:repository": {"parsed": ".recycle/%D/%U" if ad_enabled else ".recycle/%U"},
             "recycle:keeptree": {"parsed": True},

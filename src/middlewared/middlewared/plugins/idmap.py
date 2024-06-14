@@ -481,9 +481,19 @@ class IdmapDomainService(CRUDService):
             verrors.add(f'{schema_name}.certificate', 'Please specify a valid certificate.')
 
         configured_domains = await self.query()
-        ds_state = await self.middleware.call("directoryservices.get_state")
-        ldap_enabled = True if ds_state['ldap'] in ['HEALTHY', 'JOINING'] else False
-        ad_enabled = True if ds_state['activedirectory'] in ['HEALTHY', 'JOINING'] else False
+        ds = await self.middleware.call("directoryservices.status")
+        match ds['status']:
+            case 'HEALTHY' | 'JOINING':
+                if ds['type'] == 'ACTIVEDIRECTORY':
+                    ldap_enabled = False
+                    ad_enabled = True
+                else:
+                    ldap_enabled = True
+                    ad_enabled = False
+            case _:
+                ldap_enabled = False
+                ad_enabled = False
+
         new_range = range(data['range_low'], data['range_high'])
         idmap_backend = data.get('idmap_backend')
         for i in configured_domains:
@@ -766,7 +776,8 @@ class IdmapDomainService(CRUDService):
             verrors.add('idmap_domain_create.name', 'Domain names must be unique.')
 
         if data['options'].get('sssd_compat'):
-            if await self.middleware.call('activedirectory.get_state') != 'HEALTHY':
+            status = (await self.middleware.call('directoryservices.status'))['status']
+            if status != 'HEALTHY':
                 verrors.add('idmap_domain_create.options',
                             'AD service must be enabled and started to '
                             'generate an SSSD-compatible id range')
@@ -841,7 +852,8 @@ class IdmapDomainService(CRUDService):
                         f'Changing name of default domain {old["name"]} is not permitted')
 
         if new['options'].get('sssd_compat') and not old['options'].get('sssd_compat'):
-            if await self.middleware.call('activedirectory.get_state') != 'HEALTHY':
+            ds_state = await self.middleware.call('directoryservices.get_state')
+            if ds_state['activedirectory'] != 'HEALTHY':
                 verrors.add('idmap_domain_update.options',
                             'AD service must be enabled and started to '
                             'generate an SSSD-compatible id range')

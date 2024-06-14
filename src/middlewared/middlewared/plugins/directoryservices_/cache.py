@@ -85,12 +85,12 @@ class DSCache(Service):
                     pwdobj = await self.middleware.call('user.get_user_obj', {
                         'get_groups': False, 'sid_info': True
                     } | who)
-                    if pwdobj['sid_info'] is None:
+                    if pwdobj['sid'] is None:
                         # This indicates that idmapping is significantly broken
                         return None
 
                     entry = await self.middleware.call('idmap.synthetic_user',
-                                                       ds.lower(), pwdobj, pwdobj['sid_info']['sid'])
+                                                       ds.lower(), pwdobj, pwdobj['sid'])
                     if entry is None:
                         return None
                 else:
@@ -100,12 +100,12 @@ class DSCache(Service):
                         who = {'gid': who_id}
 
                     grpobj = await self.middleware.call('group.get_group_obj', {'sid_info': True} | who)
-                    if grpobj['sid_info'] is None:
+                    if grpobj['sid'] is None:
                         # This indicates that idmapping is significantly broken
                         return None
 
                     entry = await self.middleware.call('idmap.synthetic_group',
-                                                       ds.lower(), grpobj, grpobj['sid_info']['sid'])
+                                                       ds.lower(), grpobj, grpobj['sid'])
                     if entry is None:
                         return None
 

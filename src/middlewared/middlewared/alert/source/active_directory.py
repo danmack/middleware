@@ -57,42 +57,17 @@ class ActiveDirectoryDomainBindAlertSource(AlertSource):
 
         try:
             await self.middleware.run_in_thread(ds_obj.health_check)
-        except KRB5HealthError as e:
-            # For now we can simply try to start kerberos
-            # to recover from the health issue.
-            #
-            # This fixes permissions on files (which generates additional
-            # error messages regarding type of changes made), gets a
-            # fresh kerberos ticket, and sets up a transient job to
-            # renew our tickets.
-            self.middleware.logger.debug(
-                'Attempting to recover kerberos service after health '
-                'check failure for the following reason: %s',
-                e.errmsg
-            )
+        except (KRB5HealthError, ADHealthError):
+            # this is potentially recoverable
             try:
-                await self.middleware.call('kerberos.start')
-            except Exception:
-                self.middleware.logger.warning('Failed to recover kerberos service.', exc_info=True)
-
-            return Alert(
-                ActiveDirectoryDomainBindAlertClass,
-                {'wberr': str(e)},
-                key=None
-            )
-        except ADHealthError as e:
-            # Currently recovery steps are performed during actual health_check()
-            # call. The only way we get here is if service is not recoverable.
-            return Alert(
-                ActiveDirectoryDomainBindAlertClass,
-                {'wberr': str(e)},
-                key=None
-            )
-        except Exception as e:
-            # Unexpected exception type. Most likely a bug in health_check()
-            self.middleware.logger.debug("Unexpected error", exc_info=True)
-            return Alert(
-                ActiveDirectoryDomainBindAlertClass,
-                {'wberr': str(e)},
-                key=None
-            )
+                await self.middleware.call('directoryservices.recover')
+            except Exception as e:
+                # Recovery failed, generate an alert
+                return Alert(
+                    ActiveDirectoryDomainBindAlertClass,
+                    {'wberr': str(e)},
+                    key=None
+                )
+        except Exception:
+            # We shouldn't be raising other sorts of errors
+            self.logger.error("Unexpected error while performing health check.", exc_info=True)

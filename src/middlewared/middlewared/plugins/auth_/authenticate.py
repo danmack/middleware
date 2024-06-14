@@ -95,12 +95,15 @@ class AuthService(Service):
                 account_flags = ['LOCAL']
             case NssModule.WINBIND.name:
                 # Active directory user
-                twofactor_id = user['sid_info']['sid']
+                twofactor_id = user['sid']
                 groups_key = 'ds_groups'
                 account_flags = ['DIRECTORY_SERVICE', 'ACTIVE_DIRECTORY']
             case NssModule.SSS.name:
                 # This includes both OpenLDAP and IPA domains
-                twofactor_id = user['sid_info']['sid']
+                # Since IPA domains may have cross-realm trusts with separate
+                # idmap configuration we will preferentially use the SID if it is
+                # available (since it should be static and universally unique)
+                twofactor_id = user['sid'] or user_info['id']
                 groups_key = 'ds_groups'
                 account_flags = ['DIRECTORY_SERVICE', 'LDAP']
             case _:

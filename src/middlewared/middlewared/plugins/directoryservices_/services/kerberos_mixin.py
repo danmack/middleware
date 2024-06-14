@@ -37,6 +37,21 @@ class KerberosMixin:
         """
         krb5.check_ticket(krb5_constants.krb5ccache.SYSTEM.value)
 
+    def _recover_krb5(self, error: KRB5HealthError) -> None:
+        # For now we can simply try to start kerberos
+        # to recover from the health issue.
+        #
+        # This fixes permissions on files (which generates additional
+        # error messages regarding type of changes made), gets a
+        # fresh kerberos ticket, and sets up a transient job to
+        # renew our tickets.
+        self.logger.warning(
+            'Attempting to recover kerberos service after health '
+            'check failure for the following reason: %s',
+            error.errmsg
+        )
+        self.call_sync('kerberos.start')
+
     def _health_check_krb5(self) -> None:
         """
         Individual directory services may call this within their

@@ -1,10 +1,14 @@
 <%
     from middlewared.plugins.directoryservices_.all import get_enabled_ds
+    from middlewared.plugins.etc import FileShouldNotExist
     from middlewared.plugins.ldap_ import constants
     from middlewared.plugins.ldap_ import utils
     from middlewared.utils.directoryservices.constants import DSType
 
     ds_obj = get_enabled_ds()
+    if ds_obj is None:
+        # Standalone server
+        raise FileShouldNotExist
 
     if ds_obj.ds_type is DSType.LDAP:
         ldap = middleware.call_sync('ldap.config')
@@ -46,6 +50,10 @@
         ipa_info = ds_obj.setup_legacy()
         smb_domain_info = ds_obj.get_smb_domain_info()
 
+    else:
+        # AD enabled
+        raise FileShouldNotExist
+
 %>
 % if ds_obj.ds_type is DSType.LDAP:
 [sssd]
@@ -71,7 +79,7 @@ ldap_tls_reqcert = ${'demand' if ldap['validate_certificates'] else 'allow'}
 ldap_default_bind_dn = ${ldap['binddn']}
 ldap_default_authtok = ${ldap['bindpw']}
 % endif
-enumerate = ${not ldap['disable_freenas_cache']}
+enumerate = ${ldap['enumerate']}
 % if kerberos_realm:
 ldap_sasl_mech = GSSAPI
 ldap_sasl_realm = ${kerberos_realm}

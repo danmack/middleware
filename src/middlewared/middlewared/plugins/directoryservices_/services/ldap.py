@@ -1,9 +1,11 @@
 from .base_interface import DirectoryServiceInterface
+from .cache_mixin import CacheMixin
 from middlewared.utils.directoryservices.constants import DSType
 from middlewared.utils.nss.nss_common import NssModule
 
 
-class LdapDirectoryService(DirectoryServiceInterface):
+class LdapDirectoryService(DirectoryServiceInterface, CacheMixin):
+
     def __init__(self, middleware, is_enterprise):
         super().__init__(
             middleware=middleware,
@@ -12,8 +14,18 @@ class LdapDirectoryService(DirectoryServiceInterface):
             datastore_prefix='ldap_',
             has_sids=False,
             is_enterprise=is_enterprise,
-            nss_module=NssModule.SSS.name
+            nss_module=NssModule.SSS.name,
+            etc=['ldap', 'pam', 'nss']
         )
+
+    def activate(self):
+        self.generate_etc()
+        self.call('service.stop', 'sssd')
+        self.call('service.start', 'sssd', {'silent': False})
+
+    def deactivate(self):
+        self.generate_etc()
+        self.call('service.stop', 'sssd')
 
     def is_enabled(self) -> bool:
         """
