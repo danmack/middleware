@@ -105,7 +105,7 @@ class WBClient:
             self.ctx.uid_gid_objects_from_sids,
             sidlist
         )
-        return self.as_dict(data)
+        return self._as_dict(data)
 
     def users_and_groups_to_idmap_entries(self, uidgids):
         payload = [{

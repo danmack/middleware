@@ -54,7 +54,7 @@ class KerberosMixin:
 
             raise KRB5HealthError(
                 KRB5HealthCheckFailReason.KRB5_NO_CONFIG,
-                self.faulted_reason
+                self._faulted_reason
             )
 
         if (err_str := self._perm_check(st, 0o644)) is not None:
@@ -64,7 +64,7 @@ class KerberosMixin:
             )
             raise KRB5HealthError(
                 KRB5HealthCheckFailReason.KRB5_CONFIG_PERM,
-                self.faulted_reason
+                self._faulted_reason
             )
 
         try:
@@ -74,13 +74,12 @@ class KerberosMixin:
                 'System kerberos credential cache missing. This may indicate '
                 'failure to renew kerberos credential or initialize a new '
                 'ticket. Common reasons for this to happen are DNS resolution '
-                'failures and unexpected changes to the TrueNAS server\'s host '
-                'principal keytab on the IPA server that were not stored on the '
-                'TrueNAS server'
+                'failures and unexpected changes to the TrueNAS server\'s '
+                'machine account that were not replicated to the TrueNAS server. '
             )
             raise KRB5HealthError(
                 KRB5HealthCheckFailReason.KRB5_NO_CCACHE,
-                self.faulted_reason
+                self._faulted_reason
             )
 
         if (err_str := self._perm_check(st, 0o600)) is not None:
@@ -92,7 +91,7 @@ class KerberosMixin:
             )
             raise KRB5HealthError(
                 KRB5HealthCheckFailReason.KRB5_CCACHE_PERM,
-                self.faulted_reason
+                self._faulted_reason
             )
 
         try:
@@ -100,18 +99,18 @@ class KerberosMixin:
         except FileNotFoundError:
             self._faulted_reason = (
                 'System keytab is missing. This may indicate that an administrative '
-                'action was taken to remove the required IPA host principal '
-                'keytab from the TrueNAS server. Rejoining IPA domain may be '
+                'action was taken to remove the required machine account '
+                'keytab from the TrueNAS server. Rejoining domain may be '
                 'required in order to resolve this issue.'
             )
             raise KRB5HealthError(
                 KRB5HealthCheckFailReason.KRB5_NO_KEYTAB,
-                self.faulted_reason
+                self._faulted_reason
             )
 
         if (err_str := self._perm_check(st, 0o600)) is not None:
             self._faulted_reason = (
-                'Unexpected permissions or ownership on the IPA keberos keytab '
+                'Unexpected permissions or ownership on the keberos keytab '
                 f'file: {err_str} '
                 'This error may have exposed the TrueNAS server\'s host principal '
                 'credentials to unauthorized users. Revoking keytab and rejoining '
@@ -119,17 +118,17 @@ class KerberosMixin:
             )
             raise KRB5HealthError(
                 KRB5HealthCheckFailReason.KRB5_KEYTAB_PERM,
-                self.faulted_reason
+                self._faulted_reason
             )
 
         if not krb5.klist_check(krb5_constants.krb5ccache.SYSTEM.value):
             self._faulted_reason = (
-                'Kerberos ticket for IPA domain is expired. Failure to renew '
+                'Kerberos ticket for domain is expired. Failure to renew '
                 'kerberos ticket may indicate issues with DNS resolution or '
                 'IPA domain or realm changes that need to be accounted for '
                 'in the TrueNAS configuration.'
             )
             raise KRB5HealthError(
                 KRB5HealthCheckFailReason.KRB5_TKT_EXPIRED,
-                self.faulted_reason
+                self._faulted_reason
             )

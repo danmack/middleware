@@ -73,7 +73,7 @@ class ActiveDirectoryDomainBindAlertSource(AlertSource):
             try:
                 await self.middleware.call('kerberos.start')
             except Exception:
-                self.logger.warning('Failed to recover kerberos service.', exc_info=True)
+                self.middleware.logger.warning('Failed to recover kerberos service.', exc_info=True)
 
             return Alert(
                 ActiveDirectoryDomainBindAlertClass,
@@ -90,7 +90,7 @@ class ActiveDirectoryDomainBindAlertSource(AlertSource):
             )
         except Exception as e:
             # Unexpected exception type. Most likely a bug in health_check()
-            self.logger.debug("Unexpected error", exc_info=True)
+            self.middleware.logger.debug("Unexpected error", exc_info=True)
             return Alert(
                 ActiveDirectoryDomainBindAlertClass,
                 {'wberr': str(e)},

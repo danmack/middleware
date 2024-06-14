@@ -10,6 +10,19 @@ from middlewared.plugins.smb_.constants import SMBCmd
 from middlewared.service_exception import CallError
 from typing import Optional
 
+def _normalize_dict(dict_in) -> None:
+    """
+    normalizes dictionary keys to be lower-case and replaces spaces with
+    underscores
+
+    changes keys in-place
+    """
+    for key in list(dict_in.keys()):
+        value = dict_in.pop(key)
+        dict_in[key.replace(' ', '_').lower()] = value
+
+    return dict_in
+
 
 def get_domain_info(domain: str) -> dict:
     """
@@ -43,14 +56,7 @@ def get_domain_info(domain: str) -> dict:
 
     if netads.returncode == 0:
         data = json.loads(netads.stdout.decode())
-
-        # normalize keys for our output
-        for key in list(data.keys()):
-            value = data.pop(key)
-            new_key = '_'.join(key.split()).lower()
-            data[new_key] = value
-
-        return data
+        return _normalize_dict(data)
 
     if (err_msg := netads.stderr.decode().strip()) == "Didn't find the ldap server!":
         raise CallError(
@@ -60,6 +66,24 @@ def get_domain_info(domain: str) -> dict:
         )
 
     raise CallError(err_msg)
+
+def lookup_dc(domain_name: str) -> dict:
+    lookup = subprocess.run([
+        SMBCmd.NET.value,
+        '-S', domain_name,
+        '--json',
+        '--realm', domain_name,
+        'ads', 'lookup'
+    ], check=False, capture_output=True)
+
+    if lookup.returncode != 0:
+        raise CallError(
+            'Failed to look up Domain Controller information: '
+            f'{lookup.stderr.decode().strip()}'
+        )
+
+    data = json.loads(lookup.stdout.decode())
+    return _normalize_dict(data)
 
 
 def get_machine_account_status(target_dc: Optional[str] = None) -> dict:

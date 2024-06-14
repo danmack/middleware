@@ -88,7 +88,7 @@ class NsupdateMixin:
                     })
                 ])
             except dns.resolver.NXDOMAIN:
-                pass
+                current_addresses = set()
 
             to_remove_ips = current_addresses - validated_ips
 

@@ -949,7 +949,7 @@ class IdmapDomainService(CRUDService):
         # winbind are both running when we are joined to an IPA
         # domain. Former provides authoritative SID<->XID resolution
         # IPA accounts. The latter is authoritative for local accounts.
-        if get_enabled_ds() and get_enabled_ds.name == 'IPA':
+        if (enabled_ds:= get_enabled_ds()) and enabled_ds.name == 'IPA':
             if to_check:
                 sss_ctx = SSSClient()
                 results = sss_ctx.sids_to_idmap_entries(to_check)
@@ -958,7 +958,7 @@ class IdmapDomainService(CRUDService):
 
         if to_check:
             try:
-                results = client.sids_to_users_and_groups(to_check)
+                results = client.sids_to_idmap_entries(to_check)
             except wbclient.WBCError as e:
                 raise CallError(str(e), WBCErr[e.error_code], e.error_code)
 

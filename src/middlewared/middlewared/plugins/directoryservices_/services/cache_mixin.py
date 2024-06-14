@@ -6,6 +6,7 @@ from middlewared.utils.nss import pwd, grp
 from middlewared.plugins.idmap_.idmap_constants import (
     IDType,
     MAX_REQUEST_LENGTH,
+    SID_BUILTIN_PREFIX,
     SID_LOCAL_USER_PREFIX,
     SID_LOCAL_GROUP_PREFIX,
 )
@@ -31,6 +32,11 @@ class CacheMixin:
             if idmap_entry['sid'].startswith((SID_LOCAL_GROUP_PREFIX, SID_LOCAL_USER_PREFIX)):
                 self.logger.warning('%s [%d] collides with local user or group. '
                                     'Omitting from cache', entry['id_type'], entry['id'])
+                to_remove.append(idx)
+                continue
+
+            if idmap_entry['sid'].startswith(SID_BUILTIN_PREFIX):
+                # We don't want users to select auto-generated builtin groups
                 to_remove.append(idx)
                 continue
 
@@ -103,6 +109,8 @@ class CacheMixin:
         user_cnt = 0
         group_cnt = 0
 
+        # wipe out any existing entries
+        self.call_sync('tdb.wipe', {'name': f'{self.name}_user'})
         for users in self._get_entries_for_cache(IDType.USER, dom_by_sid):
             for u in users:
                 user_data = u['nss']
@@ -143,6 +151,8 @@ class CacheMixin:
                 )
                 user_cnt += 1
 
+        # wipe out any existing entries
+        self.call_sync('tdb.wipe', {'name': f'{self.name}_group'})
         for groups in self._get_entries_for_cache(IDType.GROUP, dom_by_sid):
             for g in groups:
                 group_data = g['nss']

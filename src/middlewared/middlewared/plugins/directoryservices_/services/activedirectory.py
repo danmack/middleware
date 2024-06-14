@@ -11,7 +11,8 @@ from .nsupdate_mixin import NsupdateMixin
 from middlewared.utils.nss.nss_common import NssModule
 from middlewared.utils.directoryservices.ad import (
     get_domain_info,
-    get_machine_account_status
+    get_machine_account_status,
+    lookup_dc
 )
 from middlewared.utils.directoryservices.ad_constants import (
     MAX_SERVER_TIME_OFFSET
@@ -83,6 +84,25 @@ class ADDirectoryService(
 
         return domain_info
 
+    def _lookup_dc(
+        self,
+        domain_in: Optional[str] = None,
+        retry: Optional[bool] = True
+    ) -> dict:
+        domain = domain_in or self.config['domainname']
+        try:
+            dc_info  = lookup_dc(domain)
+        except Exception as e:
+            if not retry:
+                raise e from None
+
+            # samba's gencache may have a stale server affinity entry
+            # or stale negative cache results
+            self.call_sync('idmap.gencache.flush')
+            dc_info = lookup_dc(domain)
+
+        return dc_info
+
     @kerberos_ticket
     @active_controller
     def test_join(self, workgroup: str):
@@ -111,6 +131,7 @@ class ADDirectoryService(
         # that our credentials are wrong or the computer account doesn't
         # exist
         for err_str in (
+            'join to domain is not valid',
             '0xfffffff6',
             'LDAP_INVALID_CREDENTIALS',
             'The name provided is not a properly formed account name',
@@ -147,7 +168,7 @@ class ADDirectoryService(
             '--use-krb5-ccache', krb5ccache.SYSTEM.value,
             '-U', conf['bindname'],
             '-d', '5',
-            'ads', 'testjoin',
+            'ads', 'join',
         ]
 
         if conf['createcomputer']:

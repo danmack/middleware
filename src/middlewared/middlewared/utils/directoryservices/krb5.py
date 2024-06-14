@@ -190,12 +190,12 @@ def check_ticket(ccache_path: str, raise_error: Optional[bool] = True):
     Use gssapi library to inpsect the ticket in the specified ccache
     """
     try:
-        cred = gssapi.Credentials(store={'ccache': ccache_path})
+        cred = gssapi.Credentials(store={'ccache': ccache_path}, usage='initiate')
     except gssapi.exceptions.MissingCredentialsError:
         if not raise_error:
             return False
 
-        raise CallError('Credentials cache does not exist', errno.ENOENT)
+        raise CallError(f'{ccache_path}: Credentials cache does not exist', errno.ENOENT)
 
     try:
         cred.inquire()
