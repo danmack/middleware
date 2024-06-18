@@ -63,7 +63,7 @@ def cleanup_forward_zone():
 
 
 def cleanup_reverse_zone():
-    result = call('smb.bindip_choies').values()
+    result = call('smb.bindip_choices').values()
     ptr_table = {f'{ipaddress.ip_address(i).reverse_pointer}.': i for i in result}
 
     try:

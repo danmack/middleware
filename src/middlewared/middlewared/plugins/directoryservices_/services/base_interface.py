@@ -12,9 +12,6 @@ from os import stat_result
 from typing import Callable, Union, Optional
 
 
-CONFIG_TIMEOUT = 60
-
-
 class DirectoryServiceInterface:
     """
     Base directory services class. This provides common status-related code
