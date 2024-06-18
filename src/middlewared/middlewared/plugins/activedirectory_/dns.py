@@ -1,8 +1,6 @@
 import dns
 import enum
 import errno
-import ipaddress
-import socket
 
 from middlewared.service import CallError, private, Service
 from middlewared.utils import filter_list

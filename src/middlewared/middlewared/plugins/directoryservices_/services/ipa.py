@@ -57,7 +57,7 @@ class IpaDirectoryService(
             etc=['ldap', 'pam', 'nss', 'kerberos', 'ipa']
         )
 
-    def activate(self, background_cache_fill: Optional[bool]=False) -> None:
+    def activate(self, background_cache_fill: Optional[bool] = False) -> None:
         self.generate_etc()
         self.call_sync('service.stop', 'sssd')
         self.call_sync('service.start', 'sssd', {'silent': False})
@@ -66,7 +66,6 @@ class IpaDirectoryService(
             self.call_sync('directoryservice.cache.refresh')
         else:
             self.fill_cache()
-
 
     def deactivate(self):
         self.generate_etc()
