@@ -1196,7 +1196,7 @@ class TestNFSops:
         assert start_nfs is True
 
         xattr_nfs_path = f'/mnt/{pool_name}/test_nfs4_xattr'
-        with nfs_dataset("test_nfs4_xattr", mode="777"):
+        with nfs_dataset("test_nfs4_xattr", mode="777", delete_delay=10):
             with nfs_share(xattr_nfs_path):
                 with SSH_NFS(truenas_server.ip, xattr_nfs_path, vers=4.2,
                              user=user, password=password, ip=truenas_server.ip) as n:
@@ -1509,7 +1509,8 @@ class TestNFSops:
                 {"tag": "USER", "id": 65534, "perms": test_perms, "flags": test_flags, "type": "ALLOW"},
                 {"tag": "GROUP", "id": 666, "perms": test_perms.copy(), "flags": test_flags.copy(), "type": "ALLOW"},
             ]
-            with nfs_dataset("test_nfs4_acl", data={"acltype": "NFSV4", "aclmode": "PASSTHROUGH"}, acl=theacl):
+            ds_config = {"acltype": "NFSV4", "aclmode": "PASSTHROUGH"}
+            with nfs_dataset("test_nfs4_acl", data=ds_config, acl=theacl, delete_delay=10):
                 with nfs_share(acl_nfs_path):
                     with SSH_NFS(truenas_server.ip, acl_nfs_path, vers=version, user=user, password=password, ip=truenas_server.ip) as n:
                         nfsacl = n.getacl(".")
