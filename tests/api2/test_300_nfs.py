@@ -324,21 +324,6 @@ def test_config(init_nfs):
     assert initial_service_state['state'] == 'STOPPED', \
         f"Before update, expected STOPPED, but found {initial_service_state['state']}"
 
-    nfs_conf = call("nfs.update", {
-        "mountd_port": 618,
-        "allow_nonroot": False,
-        "rpcstatd_port": 871,
-        "rpclockd_port": 32803,
-        "protocols": ["NFSV3", "NFSV4"]
-    })
-    assert nfs_conf['mountd_port'] == 618
-    assert nfs_conf['rpcstatd_port'] == 871
-    assert nfs_conf['rpclockd_port'] == 32803
-
-    # Confirm NFS remains not running
-    nfs_state = get_nfs_service_state()
-    assert nfs_state == 'STOPPED', f'After update, expected remained STOPPED, but found {nfs_state}'
-
 
 def test_service_enable_at_boot(init_nfs):
     initial_run_state = init_nfs['service_state']
@@ -1175,13 +1160,23 @@ class TestNFSops:
 
     def test_service_ports(self, start_nfs):
         """
-        This test verifies that the custom ports we specified in
-        earlier NFS tests are set in the relevant files and are active.
+        This test verifies that we can set custom port and the
+        settings are reflected in the relevant files and are active.
         """
         assert start_nfs is True
 
+        # Make custom port selections
+        nfs_conf = call("nfs.update", {
+            "mountd_port": 618,
+            "rpcstatd_port": 871,
+            "rpclockd_port": 32803,
+        })
+        assert nfs_conf['mountd_port'] == 618
+        assert nfs_conf['rpcstatd_port'] == 871
+        assert nfs_conf['rpclockd_port'] == 32803
+
+        # Compare DB with setting in /etc/nfs.conf.d/local.conf
         with nfs_config() as config_db:
-            # Compare DB with setting in /etc/nfs.conf.d/local.conf
             s = parse_server_config()
             assert int(s['mountd']['port']) == config_db["mountd_port"], str(s)
             assert int(s['statd']['port']) == config_db["rpcstatd_port"], str(s)
