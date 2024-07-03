@@ -72,6 +72,8 @@ class NFS(object):
 
     def __exit__(self, typ, value, traceback):
         self.umount()
+        # Clean up testnfs directory
+        self.rmdir(forced=True)
 
 
 class SSH_NFS(NFS):
@@ -234,9 +236,9 @@ class SSH_NFS(NFS):
         if mkdir['result'] is False:
             raise RuntimeError(mkdir['stderr'])
 
-    def rmdir(self, path):
+    def rmdir(self, path="", forced=False):
         rmdir = SSH_TEST(
-            f"rmdir {self._localpath}/{path}",
+            f'{"rm -rf" if forced else "rmdir"} {self._localpath}/{path}',
             self._user, self._password, self._ip
         )
         if rmdir['result'] is False:
