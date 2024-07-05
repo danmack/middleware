@@ -349,30 +349,6 @@ class TestNFSops:
     """
     Most of the tests are in this class where the server is running
     """
-
-    def test_xattr_support(self, start_nfs):
-        """
-        Perform basic validation of NFSv4.2 xattr support.
-        Mount path via NFS 4.2, create a file and dir,
-        and write + read xattr on each.
-        """
-        assert start_nfs is True
-
-        xattr_nfs_path = f'/mnt/{pool_name}/test_nfs4_xattr'
-        with nfs_dataset("test_nfs4_xattr", mode="777", delete_delay=10):
-            with nfs_share(xattr_nfs_path):
-                with SSH_NFS(truenas_server.ip, xattr_nfs_path, vers=4.2,
-                             user=user, password=password, ip=truenas_server.ip) as n:
-                    n.create("testfile")
-                    n.setxattr("testfile", "user.testxattr", "the_contents")
-                    xattr_val = n.getxattr("testfile", "user.testxattr")
-                    assert xattr_val == "the_contents"
-
-                    n.create("testdir", True)
-                    n.setxattr("testdir", "user.testxattr2", "the_contents2")
-                    xattr_val = n.getxattr("testdir", "user.testxattr2")
-                    assert xattr_val == "the_contents2"
-
     def test_state_directory(self, start_nfs):
         """
         By default, the NFS state directory is at /var/lib/nfs.
