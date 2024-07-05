@@ -1,22 +1,12 @@
-import pytest
-
 from auto_config import password, pool_name, user
 from middlewared.test.integration.assets.pool import dataset as nfs_dataset
+from middlewared.test.integration.assets.nfs import nfs_start
 from middlewared.test.integration.utils import call
 from middlewared.test.integration.utils.client import truenas_server
 from protocols import SSH_NFS, nfs_share
 
 
-@pytest.fixture(scope="module")
-def start_nfs():
-    """ The exit state is managed by init_nfs """
-    try:
-        yield call('service.start', 'nfs', {'silent': False})
-    finally:
-        call('service.stop', 'nfs', {'silent': False})
-
-
-def test_nfsv4_acl_support(start_nfs):
+def test_nfsv4_acl_support():
     """
     This test validates reading and setting NFSv4 ACLs through an NFSv4
     mount in the following manner for NFSv4.2, NFSv4.1 & NFSv4.0:
@@ -28,7 +18,6 @@ def test_nfsv4_acl_support(start_nfs):
     4) For NFSv4.1 or NFSv4.2, repeat same process for each of the
     supported acl_flags.
     """
-    assert start_nfs is True
     acl_nfs_path = f'/mnt/{pool_name}/test_nfs4_acl'
     test_perms = {
         "READ_DATA": True,
@@ -62,57 +51,58 @@ def test_nfsv4_acl_support(start_nfs):
             {"tag": "GROUP", "id": 666, "perms": test_perms.copy(), "flags": test_flags.copy(), "type": "ALLOW"},
         ]
         ds_config = {"acltype": "NFSV4", "aclmode": "PASSTHROUGH"}
-        # with nfs_dataset("test_nfs4_acl", data=ds_config, acl=theacl, delete_delay=10):
         with nfs_dataset("test_nfs4_acl", data=ds_config, acl=theacl):
             with nfs_share(acl_nfs_path):
-                with SSH_NFS(truenas_server.ip, acl_nfs_path, vers=version, user=user, password=password, ip=truenas_server.ip) as n:
-                    nfsacl = n.getacl(".")
-                    for idx, ace in enumerate(nfsacl):
-                        assert ace == theacl[idx], str(ace)
-
-                    for perm in test_perms.keys():
-                        if perm == 'SYNCHRONIZE':
-                            # break in SYNCHRONIZE because Linux tool limitation
-                            break
-
-                        theacl[4]['perms'][perm] = False
-                        n.setacl(".", theacl)
+                with nfs_start():
+                    with SSH_NFS(truenas_server.ip, acl_nfs_path, vers=version,
+                                 user=user, password=password, ip=truenas_server.ip) as n:
                         nfsacl = n.getacl(".")
                         for idx, ace in enumerate(nfsacl):
                             assert ace == theacl[idx], str(ace)
 
-                        res = call('filesystem.getacl', acl_nfs_path, False)
-                        for idx, ace in enumerate(res['acl']):
-                            assert ace == nfsacl[idx], str(ace)
+                        for perm in test_perms.keys():
+                            if perm == 'SYNCHRONIZE':
+                                # break in SYNCHRONIZE because Linux tool limitation
+                                break
 
-                    for flag in ("INHERIT_ONLY", "NO_PROPAGATE_INHERIT"):
-                        theacl[4]['flags'][flag] = True
-                        n.setacl(".", theacl)
-                        nfsacl = n.getacl(".")
-                        for idx, ace in enumerate(nfsacl):
-                            assert ace == theacl[idx], str(ace)
+                            theacl[4]['perms'][perm] = False
+                            n.setacl(".", theacl)
+                            nfsacl = n.getacl(".")
+                            for idx, ace in enumerate(nfsacl):
+                                assert ace == theacl[idx], str(ace)
 
-                        res = call('filesystem.getacl', acl_nfs_path, False)
-                        for idx, ace in enumerate(res['acl']):
-                            assert ace == nfsacl[idx], str(ace)
-
-                    if test_acl_flag:
-                        assert 'none' == n.getaclflag(".")
-                        for acl_flag in ['auto-inherit', 'protected', 'defaulted']:
-                            n.setaclflag(".", acl_flag)
-                            assert acl_flag == n.getaclflag(".")
                             res = call('filesystem.getacl', acl_nfs_path, False)
-                            # Normalize the flag_is_set name for comparision to plugin equivalent
-                            # (just remove the '-' from auto-inherit)
-                            if acl_flag == 'auto-inherit':
-                                flag_is_set = 'autoinherit'
-                            else:
-                                flag_is_set = acl_flag
-                            # Now ensure that only the expected flag is set
-                            # nfs41_flags = result.json()['nfs41_flags']
-                            nfs41_flags = res['nfs41_flags']
-                            for flag in ['autoinherit', 'protected', 'defaulted']:
-                                if flag == flag_is_set:
-                                    assert nfs41_flags[flag], nfs41_flags
+                            for idx, ace in enumerate(res['acl']):
+                                assert ace == nfsacl[idx], str(ace)
+
+                        for flag in ("INHERIT_ONLY", "NO_PROPAGATE_INHERIT"):
+                            theacl[4]['flags'][flag] = True
+                            n.setacl(".", theacl)
+                            nfsacl = n.getacl(".")
+                            for idx, ace in enumerate(nfsacl):
+                                assert ace == theacl[idx], str(ace)
+
+                            res = call('filesystem.getacl', acl_nfs_path, False)
+                            for idx, ace in enumerate(res['acl']):
+                                assert ace == nfsacl[idx], str(ace)
+
+                        if test_acl_flag:
+                            assert 'none' == n.getaclflag(".")
+                            for acl_flag in ['auto-inherit', 'protected', 'defaulted']:
+                                n.setaclflag(".", acl_flag)
+                                assert acl_flag == n.getaclflag(".")
+                                res = call('filesystem.getacl', acl_nfs_path, False)
+                                # Normalize the flag_is_set name for comparision to plugin equivalent
+                                # (just remove the '-' from auto-inherit)
+                                if acl_flag == 'auto-inherit':
+                                    flag_is_set = 'autoinherit'
                                 else:
-                                    assert not nfs41_flags[flag], nfs41_flags
+                                    flag_is_set = acl_flag
+                                # Now ensure that only the expected flag is set
+                                # nfs41_flags = result.json()['nfs41_flags']
+                                nfs41_flags = res['nfs41_flags']
+                                for flag in ['autoinherit', 'protected', 'defaulted']:
+                                    if flag == flag_is_set:
+                                        assert nfs41_flags[flag], nfs41_flags
+                                    else:
+                                        assert not nfs41_flags[flag], nfs41_flags
