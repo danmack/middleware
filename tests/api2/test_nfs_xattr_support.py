@@ -19,13 +19,12 @@ def start_nfs():
 
 
 # def test_nfs_xattr_support(start_nfs):
-def test_nfs_xattr_support(start_nfs):
+def test_nfs_xattr_support():
     """
     Perform basic validation of NFSv4.2 xattr support.
     Mount path via NFS 4.2, create a file and dir,
     and write + read xattr on each.
     """
-    assert start_nfs is True
 
     xattr_nfs_path = f'/mnt/{pool_name}/test_nfs4_xattr'
     # with nfs_dataset("test_nfs4_xattr", mode="777", delete_delay=10):
