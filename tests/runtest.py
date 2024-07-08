@@ -303,7 +303,6 @@ pytest_command = [
     "--junitxml",
     'results/api_v2_tests_result.xml',
 ]
-testexpr = 'not test_config and not test_service_enable_at_boot and not test_dataset_permissions and not test_state_directory and not test_basic_nfs_ops and not test_server_side_copy and not test_service_update and not test_share_update and not test_share_networks and not test_share_hosts and not test_share_ro and not test_share_maproot and not test_share_mapall and not test_subtree_behavior and not test_nonroot_behavior and not test_syslog_filters and not test_client_status and not test_invalid_user_group_mapping and not test_service_protocols and not test_service_udp and not test_service_ports and not test_runtime_debug and not test_subtree_share and not test_threadpool_mode and not test_missing_or_empty_exports and not test_files_in_exportsd '
 if testexpr:
     pytest_command.extend(['-k', testexpr])
 
@@ -322,10 +321,7 @@ tests = ['api2/test_001_ssh.py',
          'api2/test_005_interface.py',
          'api2/test_006_pool_and_sysds.py',
          'api2/test_007_early_settings.py',
-#         'api2/test_nfsv4_acls.py']
-#         'api2/test_nfs_xattr_support.py']
-         'api2/test_nfs_xattr_support.py', 'api2/test_nfsv4_acls.py']
-#         'api2/test_300_nfs.py', 'api2/test_nfs_xattr_support.py', 'api2/test_nfsv4_acls.py']
+         'api2/test_300_nfs.py', 'api2/test_nfs_xattr_support.py', 'api2/test_nfsv4_acls.py']
 # Account for the parse strippage
 tests = ['api2/'+v for v in tests]
 if tests:
