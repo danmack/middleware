@@ -1,6 +1,7 @@
 import sys
 from functions import SSH_TEST, SRVTarget, get_host_ip
 from platform import system
+from subprocess import TimeoutExpired
 
 # sys.real_prefix only found in old virtualenv
 # if detected set local site-packages to use for samba
@@ -386,9 +387,14 @@ class SSH_NFS(NFS):
         print(f"\n[MCG DEBUG] try mount {self._localpath}, tries={tries}")
         while not mnt_success and tries > 0:
             tries -= 1
-            do_mount = SSH_TEST(" ".join(cmd), self._mount_user, self._mount_password, self._ip)
-            # if do_mount['result'] is False:
-            #     raise RuntimeError(do_mount['stderr'])
+            try:
+                do_mount = SSH_TEST(" ".join(cmd), self._mount_user, self._mount_password, self._ip)
+                # if do_mount['result'] is False:
+                #     raise RuntimeError(do_mount['stderr'])
+            except TimeoutExpired:
+                print("[MCG DEBUG] -- trapped timeout")
+                pass
+
             mnt_success = do_mount['result']
             if not mnt_success:
                 print(f"[MCG DEBUG] mount failure: {do_mount['stderr']}")
