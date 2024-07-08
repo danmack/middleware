@@ -1,7 +1,7 @@
 from auto_config import password, pool_name, user
 from middlewared.test.integration.assets.pool import dataset as nfs_dataset
 from middlewared.test.integration.assets.nfs import nfs_start
-from middlewared.test.integration.utils import call
+from middlewared.test.integration.utils import call, ssh
 from middlewared.test.integration.utils.client import truenas_server
 from protocols import SSH_NFS, nfs_share
 
@@ -19,6 +19,8 @@ def test_nfs_xattr_support():
             with nfs_start():
                 service_state = call('service.query', [['service', '=', 'nfs']], {'get': True})
                 print(f"[MCG DEBUG] nfs service state start = {service_state}")
+                sme = ssh("showmount -e")
+                print(f"[MCG DEBUG] showmount -e: {sme}")
                 with SSH_NFS(truenas_server.ip, xattr_nfs_path, vers=4.2,
                              user=user, password=password, ip=truenas_server.ip) as n:
                     n.create("testfile")
