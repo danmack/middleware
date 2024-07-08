@@ -322,8 +322,8 @@ tests = ['api2/test_001_ssh.py',
          'api2/test_005_interface.py',
          'api2/test_006_pool_and_sysds.py',
          'api2/test_007_early_settings.py',
-         'api2/test_nfsv4_acls.py']
-#         'api2/test_nfs_xattr_support.py']
+#         'api2/test_nfsv4_acls.py']
+         'api2/test_nfs_xattr_support.py']
 #         'api2/test_nfs_xattr_support.py', 'api2/test_nfsv4_acls.py']
 #         'api2/test_300_nfs.py', 'api2/test_nfs_xattr_support.py', 'api2/test_nfsv4_acls.py']
 # Account for the parse strippage
