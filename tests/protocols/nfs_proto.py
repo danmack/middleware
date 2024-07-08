@@ -392,11 +392,11 @@ class SSH_NFS(NFS):
             mnt_success = do_mount['result']
             if not mnt_success:
                 print(f"[MCG DEBUG] mount failure: {do_mount['stderr']}")
-                print(f"[MCG DEBUG] retry mount (tries={tries})")
+                print(f"[MCG DEBUG] tries remaining: {tries}")
             else:
                 print(f"[MCG DEBUG] successful mount of {self._localpath}")
 
-            if tries <= 0:
+            if not mnt_success and tries <= 0:
                 raise RuntimeError(do_mount['stderr'])
 
         self._mounted = True
