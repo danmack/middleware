@@ -385,8 +385,10 @@ class SSH_NFS(NFS):
         mnt_success = False
         tries = 2
         print(f"\n[MCG DEBUG] TRY: 'mount -o {mnt_opts} {self._hostname}:{self._path} {self._localpath}', tries={tries}")
+
         while not mnt_success and tries > 0:
             tries -= 1
+            do_mount = {'stdout': None, 'stderr': None, 'output': None, 'returncode': None, 'result': None}
             try:
                 do_mount = SSH_TEST(" ".join(cmd), self._mount_user, self._mount_password, self._ip)
                 # if do_mount['result'] is False:
