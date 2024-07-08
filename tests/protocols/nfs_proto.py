@@ -389,14 +389,15 @@ class SSH_NFS(NFS):
             do_mount = SSH_TEST(" ".join(cmd), self._mount_user, self._mount_password, self._ip)
             # if do_mount['result'] is False:
             #     raise RuntimeError(do_mount['stderr'])
-            if do_mount['result'] is True:
-                break
+            mnt_success = do_mount['result']
 
             if tries <= 0:
                 raise RuntimeError(do_mount['stderr'])
-            else:
+            if not mnt_success:
                 print(f"[MCG DEBUG] mount failure: {do_mount['stderr']}")
                 print(f"[MCG DEBUG] retry mount (tries={tries})")
+            else:
+                print(f"[MCG DEBUG] successful mount of {self._localpath}")
 
         self._mounted = True
 
