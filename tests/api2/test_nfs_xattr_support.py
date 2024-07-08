@@ -21,7 +21,8 @@ def test_nfs_xattr_support():
                 # -------------- DEBUG? Turn into an assert? ------------
                 service_state = call('service.query', [['service', '=', 'nfs']], {'get': True})
                 print(f"[MCG DEBUG] nfs service_state['state'] = {service_state['state']}")
-                with SSH_NFS(truenas_server.ip, xattr_nfs_path, vers=4.2,
+                # with SSH_NFS(truenas_server.ip, xattr_nfs_path, vers=4.2,
+                with SSH_NFS(truenas_server.ip, xattr_nfs_path, vers=4,
                              user=user, password=password, ip=truenas_server.ip) as n:
                     n.create("testfile")
                     n.setxattr("testfile", "user.testxattr", "the_contents")

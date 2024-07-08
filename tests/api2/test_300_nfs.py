@@ -306,6 +306,7 @@ def start_nfs():
     try:
         yield set_nfs_service_state('start')
     finally:
+        print("[MCG DEBUG] stop nfs")
         set_nfs_service_state('stop')
 
 

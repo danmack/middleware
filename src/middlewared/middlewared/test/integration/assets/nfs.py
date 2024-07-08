@@ -16,6 +16,7 @@ def nfs_start():
     try:
         yield call('service.start', 'nfs', {'silent': False})
     finally:
+        print("[MCG DEBUG] nfs_start: stopping nfs service")
         call('service.stop', 'nfs', {'silent': False})
 
 
@@ -29,6 +30,7 @@ def nfs_config():
         yield copy(nfs_db_conf)
     finally:
         call("nfs.update", nfs_db_conf)
+        print("[MCG DEBUG ] restored nfs config")
 
 
 @contextlib.contextmanager

@@ -48,8 +48,10 @@ def nfs_share(path, options=None):
     id = results.json()["id"]
 
     try:
+        print(f"[MCG DEBUG] Create share id {id} for path {path}")
         yield id
     finally:
+        print(f"[MCG DEBUG] Delete share id {id} for path {path}")
         result = DELETE(f"/sharing/nfs/id/{id}/")
         assert result.status_code == 200, result.text
 
