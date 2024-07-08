@@ -1,6 +1,5 @@
 import sys
 from functions import SSH_TEST, SRVTarget, get_host_ip
-from middlewared.test.integration.utils import ssh
 from platform import system
 
 # sys.real_prefix only found in old virtualenv
@@ -372,10 +371,9 @@ class SSH_NFS(NFS):
             raise RuntimeError(rv['stderr'])
 
     def mount(self):
-        # mkdir = SSH_TEST(f"mkdir -p {self._localpath}", self._mount_user, self._mount_password, self._ip)
-        # if mkdir['result'] is False:
-        #     raise RuntimeError(mkdir['stderr'])
-        ssh(f"mkdir -p {self._localpath}")
+        mkdir = SSH_TEST(f"mkdir -p {self._localpath}", self._mount_user, self._mount_password, self._ip)
+        if mkdir['result'] is False:
+            raise RuntimeError(mkdir['stderr'])
         mnt_opts = f'vers={self._version}'
         if self._use_kerberos:
             mnt_opts += ',sec=krb5'
@@ -383,10 +381,15 @@ class SSH_NFS(NFS):
             mnt_opts += ',' + ','.join(self._options)
 
         cmd = ['mount.nfs', '-o', mnt_opts, f'{self._hostname}:{self._path}', self._localpath]
-        # do_mount = SSH_TEST(" ".join(cmd), self._mount_user, self._mount_password, self._ip)
-        # if do_mount['result'] is False:
-        #     raise RuntimeError(do_mount['stderr'])
-        ssh(' '.join(cmd))
+        mnt_success = False
+        tries = 2
+        while not mnt_success and tries > 0:
+            tries -= 1
+            do_mount = SSH_TEST(" ".join(cmd), self._mount_user, self._mount_password, self._ip)
+            if do_mount['result'] is False and tries <= 0:
+                raise RuntimeError(do_mount['stderr'])
+            else:
+                print(f"[MCG DEBUG] retry mount (tries={tries})")
 
         self._mounted = True
 
