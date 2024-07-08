@@ -384,7 +384,7 @@ class SSH_NFS(NFS):
         cmd = ['mount.nfs', '-o', mnt_opts, f'{self._hostname}:{self._path}', self._localpath]
         mnt_success = False
         tries = 2
-        print(f"\n[MCG DEBUG] try mount {self._localpath}, tries={tries}")
+        print(f"\n[MCG DEBUG] TRY: 'mount -o {mnt_opts} {self._hostname}:{self._path} {self._localpath}', tries={tries}")
         while not mnt_success and tries > 0:
             tries -= 1
             try:
@@ -403,6 +403,7 @@ class SSH_NFS(NFS):
                 print(f"[MCG DEBUG] successful mount of {self._localpath}")
 
             if not mnt_success and tries <= 0:
+                print(f"[MCG DEBUG] raise RuntimeError({do_mount['stderr']})")
                 raise RuntimeError(do_mount['stderr'])
 
         self._mounted = True
