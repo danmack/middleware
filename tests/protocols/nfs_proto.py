@@ -397,6 +397,7 @@ class SSH_NFS(NFS):
                 print("[MCG DEBUG] -- trapped timeout")
                 pass
             finally:
+                print(f"[MCG DEBUG] do_mount['returncode']={do_mount['returncode']}, do_mount['result]={do_mount['result']}")
                 mnt_success = do_mount['result']
                 if not mnt_success:
                     print(f"[MCG DEBUG] mount failure: {do_mount['stderr']}")
@@ -404,7 +405,7 @@ class SSH_NFS(NFS):
                 else:
                     print(f"[MCG DEBUG] successful mount of {self._localpath}")
 
-                if not mnt_success and tries <= 0:
+                if mnt_success is False and tries <= 0:
                     print(f"[MCG DEBUG] raise RuntimeError({do_mount['stderr']})")
                     raise RuntimeError(do_mount['stderr'])
 
