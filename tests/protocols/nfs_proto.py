@@ -394,17 +394,17 @@ class SSH_NFS(NFS):
             except TimeoutExpired:
                 print("[MCG DEBUG] -- trapped timeout")
                 pass
+            finally:
+                mnt_success = do_mount['result']
+                if not mnt_success:
+                    print(f"[MCG DEBUG] mount failure: {do_mount['stderr']}")
+                    print(f"[MCG DEBUG] tries remaining: {tries}")
+                else:
+                    print(f"[MCG DEBUG] successful mount of {self._localpath}")
 
-            mnt_success = do_mount['result']
-            if not mnt_success:
-                print(f"[MCG DEBUG] mount failure: {do_mount['stderr']}")
-                print(f"[MCG DEBUG] tries remaining: {tries}")
-            else:
-                print(f"[MCG DEBUG] successful mount of {self._localpath}")
-
-            if not mnt_success and tries <= 0:
-                print(f"[MCG DEBUG] raise RuntimeError({do_mount['stderr']})")
-                raise RuntimeError(do_mount['stderr'])
+                if not mnt_success and tries <= 0:
+                    print(f"[MCG DEBUG] raise RuntimeError({do_mount['stderr']})")
+                    raise RuntimeError(do_mount['stderr'])
 
         self._mounted = True
 
