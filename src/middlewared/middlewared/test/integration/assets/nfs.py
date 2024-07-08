@@ -33,7 +33,10 @@ def nfs_config():
 
 @contextlib.contextmanager
 def nfs_share(dataset):
-    ''' Use this to remove the NFS share after use '''
+    '''
+    Use this to remove the NFS share after use.
+    NOTE: This also starts and stops the NFS service.
+    '''
     share = call("sharing.nfs.create", {
         "path": f"/mnt/{dataset}",
     })
