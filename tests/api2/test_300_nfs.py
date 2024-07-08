@@ -14,7 +14,9 @@ from middlewared.service_exception import ValidationError, ValidationErrors, Cal
 from middlewared.test.integration.assets.account import group as create_group
 from middlewared.test.integration.assets.account import user as create_user
 from middlewared.test.integration.assets.filesystem import directory
-from middlewared.test.integration.assets.nfs import nfs_config, nfs_share_config
+from middlewared.test.integration.assets.nfs import (
+    nfs_config, nfs_share_config, query_nfs_service
+)
 from middlewared.test.integration.assets.pool import dataset as nfs_dataset
 from middlewared.test.integration.utils import call, mock, ssh
 from middlewared.test.integration.utils.client import truenas_server
@@ -1480,7 +1482,8 @@ def test_missing_or_empty_exports(exports):
             sleep(1)
 
         # Confirm stopped
-        assert get_nfs_service_state() == "STOPPED"
+        # assert get_nfs_service_state() == "STOPPED"
+        assert query_nfs_service()['state'] == "STOPPED"
 
 
 @pytest.mark.parametrize('expect_NFS_start', [False, True])

@@ -61,3 +61,7 @@ def nfs_share_config(nfsid: int):
         excl = ['id', 'path', 'locked']
         [share_config.pop(key) for key in excl]
         call("sharing.nfs.update", nfsid, share_config)
+
+
+def query_nfs_service():
+    return call('service.query', [['service', '=', 'nfs']], {'get': True})
