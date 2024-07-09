@@ -1537,6 +1537,6 @@ def test_files_in_exportsd(expect_NFS_start):
 
 # -------------------- DEBUG --------------------  Test exit state
 def test_confirm_nfs_stopped_and_default_config():
-    assert query_nfs_service['state'] == 'STOPPED'
+    assert query_nfs_service()['state'] == 'STOPPED'
     cur_config = call('nfs.config')
     assert all((set(NFS_CONFIG.default_config[i]) == set(cur_config[i]) for i in NFS_CONFIG.default_config)), cur_config
