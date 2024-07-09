@@ -271,7 +271,8 @@ def init_nfs():
         initial_config = call("nfs.config")
         NFS_CONFIG.initial_nfs_config = copy(initial_config)
 
-        initial_service_state = call('service.query', [['service', '=', 'nfs']], {'get': True})
+        # initial_service_state = call('service.query', [['service', '=', 'nfs']], {'get': True})
+        initial_service_state = query_nfs_service()
         NFS_CONFIG.initial_service_state = copy(initial_service_state)
 
         yield {"config": initial_config, "service_state": initial_service_state}
@@ -1532,3 +1533,10 @@ def test_files_in_exportsd(expect_NFS_start):
             assert any(alert["klass"] == "NFSblockedByExportsDir" for alert in alerts), alerts
         else:  # Alert should have been cleared
             assert not any(alert["klass"] == "NFSblockedByExportsDir" for alert in alerts), alerts
+
+
+# -------------------- DEBUG --------------------  Test exit state
+def test_confirm_nfs_stopped_and_default_config():
+    assert query_nfs_service['state'] == 'STOPPED'
+    cur_config = call('nfs.config')
+    assert all((set(NFS_CONFIG.default_config[i]) == set(cur_config[i]) for i in NFS_CONFIG.default_config)), cur_config
