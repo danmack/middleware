@@ -312,6 +312,34 @@ def parse_test_name(test):
         return f"{filename}.py::{testname}"
     return test
 
+tests = ['api2/api2/test_001_ssh.py',
+         'api2/api2/test_002_system_license.py',
+         'api2/api2/test_003_network_global.py',
+         'api2/api2/test_005_interface.py',
+         'api2/api2/test_006_pool_and_sysds.py',
+         'api2/api2/test_007_early_settings.py',
+         'api2/api2/test_iscsi_auth_network.py',
+         'api2/api2/test_009_fenced.py',
+         'api2/api2/test_011_user.py',
+         'api2/api2/test_012_directory_service_ssh.py',
+         'api2/api2/test_014_failover_related.py',
+         'api2/api2/test_015_services.py',
+         'api2/api2/test_020_account.py',
+         'api2/api2/test_030_activedirectory.py',
+         'api2/api2/test_032_ad_kerberos.py',
+         'api2/api2/test_035_ad_idmap.py',
+         'api2/api2/test_040_ad_user_group_cache.py',
+         'api2/api2/test_050_alert.py',
+         'api2/api2/test_070_alertservice.py',
+         'api2/api2/test_090_boot.py',
+         'api2/api2/test_100_bootenv.py',
+         'api2/api2/test_110_certificate.py',
+         'api2/api2/test_120_certificateauthority.py',
+         'api2/api2/test_140_core.py',
+         'api2/api2/test_150_cronjob.py',
+         'api2/api2/test_190_filesystem.py',
+         'api2/api2/test_200_ftp.py']
+
 
 if tests:
     pytest_command.extend(list(map(parse_test_name, tests)))
