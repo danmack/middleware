@@ -151,6 +151,8 @@ for output, arg in myopts:
     elif output == '--show_locals':
         show_locals = True
 
+# [MCG] Allow print to console
+callargs.append('-s')
 if 'ip' not in locals() and 'passwd' not in locals() and 'interface' not in locals():
     print("Mandatory option missing!\n")
     print(error_msg)
@@ -313,6 +315,15 @@ def parse_test_name(test):
     return test
 
 
+tests = ['api2/test_001_ssh.py',
+         'api2/test_002_system_license.py',
+         'api2/test_003_network_global.py',
+         'api2/test_005_interface.py',
+         'api2/test_006_pool_and_sysds.py',
+         'api2/test_007_early_settings.py',
+         'api2/test_audit_alerts.py']
+# Account for the parse strippage
+tests = ['api2/'+v for v in tests]
 if tests:
     pytest_command.extend(list(map(parse_test_name, tests)))
 else:
